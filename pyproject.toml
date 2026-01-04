@@ -4,7 +4,7 @@ build-backend = "uv_build"
 
 [project]
 name = "llmdoc"
-version = "0.1.8"
+version = "0.1.9"
 description = "MCP server with RAG for llms.txt documentation"
 readme = "README.md"
 license = "MIT"
@@ -58,8 +58,26 @@ target-version = "py310"
 exclude = ["build", "dist", ".venv", ".git", ".mypy_cache", ".tox", "migrations"]
 
 [tool.ruff.lint]
-select = ["E", "F", "W", "I"]
-ignore = ["E203", "E501"]
+select = ["E", "F", "W", "I", "B", "C4", "UP", "SIM"]
+ignore = ["E203", "E501", "B008"]
 
 [tool.ruff.format]
 skip-magic-trailing-comma = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short --cov=llmdoc --cov-report=term-missing"
+mock_traceback_monkeypatch = false
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
+warn_redundant_casts = true
+ignore_missing_imports = true
+no_warn_no_return = true
+
+[tool.coverage.run]
+omit = ["*tests*"]

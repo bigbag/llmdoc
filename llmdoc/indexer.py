@@ -432,7 +432,7 @@ class BM25Index:
             scores = self._index.get_scores(query_tokens)
 
             # Get top results
-            scored_chunks = list(zip(self._chunks, scores))
+            scored_chunks = list(zip(self._chunks, scores, strict=False))
             scored_chunks.sort(key=lambda x: x[1], reverse=True)
 
             # Deduplicate by document URL (keep highest score)
@@ -477,7 +477,7 @@ class BM25Index:
         with self._lock:
             if not self._chunks:
                 return 0
-            return len(set(chunk.doc_url for chunk in self._chunks))
+            return len({chunk.doc_url for chunk in self._chunks})
 
     @property
     def chunk_count(self) -> int:

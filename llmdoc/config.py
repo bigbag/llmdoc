@@ -1,5 +1,6 @@
 """Configuration handling for LLMDoc."""
 
+import contextlib
 import json
 import os
 from dataclasses import dataclass, field
@@ -109,17 +110,13 @@ def load_config() -> Config:
 
     env_refresh = os.environ.get("LLMDOC_REFRESH_INTERVAL")
     if env_refresh:
-        try:
+        with contextlib.suppress(ValueError):
             refresh_interval_hours = int(env_refresh)
-        except ValueError:
-            pass
 
     env_max_concurrent = os.environ.get("LLMDOC_MAX_CONCURRENT")
     if env_max_concurrent:
-        try:
+        with contextlib.suppress(ValueError):
             max_concurrent_fetches = int(env_max_concurrent)
-        except ValueError:
-            pass
 
     env_skip_startup = os.environ.get("LLMDOC_SKIP_STARTUP_REFRESH")
     if env_skip_startup:

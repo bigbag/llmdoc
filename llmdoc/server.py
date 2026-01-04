@@ -2,7 +2,7 @@
 
 import asyncio
 import logging
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from datetime import datetime, timedelta
 from typing import Annotated, Any
 
@@ -58,7 +58,7 @@ async def lifespan(server: FastMCP):
     logger.info(f"Initialized with {app.index.document_count} documents from {app.config.db_path}")
 
     # Store app on server for middleware access
-    setattr(server, "_llmdoc_app", app)
+    server._llmdoc_app = app  # type: ignore[attr-defined]
 
     # Check if any source needs refresh based on TTL
     if config.skip_startup_refresh:
@@ -118,10 +118,8 @@ async def lifespan(server: FastMCP):
         yield
     finally:
         refresh_task.cancel()
-        try:
+        with suppress(asyncio.CancelledError):
             await refresh_task
-        except asyncio.CancelledError:
-            pass
 
         app.close()
         delattr(server, "_llmdoc_app")

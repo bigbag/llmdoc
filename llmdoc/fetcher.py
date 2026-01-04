@@ -135,13 +135,9 @@ class DocumentFetcher:
             content = response.text
             content_type = response.headers.get("content-type", "")
 
-            if self._is_markdown_url(url) or self._is_text_url(url):
+            if self._is_markdown_url(url) or self._is_text_url(url) or "text/markdown" in content_type:
                 pass
-            elif "text/markdown" in content_type:
-                pass
-            elif "text/html" in content_type:
-                content = self._convert_html_to_markdown(content)
-            elif self._is_html(content):
+            elif "text/html" in content_type or self._is_html(content):
                 content = self._convert_html_to_markdown(content)
 
             # Extract title
@@ -215,7 +211,7 @@ class DocumentFetcher:
                 results = await asyncio.gather(*tasks, return_exceptions=True)
 
                 # Process results
-                for link, result in zip(links, results):
+                for link, result in zip(links, results, strict=False):
                     if isinstance(result, BaseException):
                         errors.append(f"Failed to fetch {link.url}: {result}")
                     else:
