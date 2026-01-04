@@ -17,13 +17,17 @@ class SearchResultItem(BaseModel):
 
 
 class DocumentResult(BaseModel):
-    """Full document content."""
+    """Full document content with pagination support."""
 
     title: str
     content: str
     url: str
     source: str
     source_url: str
+    offset: int = 0
+    length: int = 0
+    total_length: int = 0
+    has_more: bool = False
 
 
 class ExcerptItem(BaseModel):

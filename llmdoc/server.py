@@ -346,6 +346,10 @@ async def search_docs(
     ]
 
 
+# Default chunk size for pagination (50KB)
+DEFAULT_CHUNK_SIZE = 50_000
+
+
 @mcp.tool(
     annotations={
         "title": "Get Document",
@@ -357,21 +361,26 @@ async def search_docs(
 )
 async def get_doc(
     url: Annotated[str, Field(description="The URL of the document (as returned by search_docs)")],
+    offset: Annotated[int, Field(description="Start position in bytes (for pagination)", ge=0)] = 0,
+    limit: Annotated[
+        int, Field(description="Max bytes to return (default 50000, max 100000)", ge=1000, le=100_000)
+    ] = DEFAULT_CHUNK_SIZE,
     ctx: Context = CurrentContext(),
     app: LLMDocApp = Depends(get_app),
 ) -> DocumentResult:
-    """Get the full content of a document by its URL.
+    """Get document content with pagination support for large documents.
 
-    Use this after search_docs to retrieve complete document content when
-    the snippet doesn't provide enough information. Pass the url from
-    a search result.
+    For documents larger than 50KB, use offset/limit to paginate through content.
+    The response includes has_more=True if more content is available.
+    For targeted retrieval, use get_doc_excerpt instead.
 
     Args:
         url: The URL of the document (as returned by search_docs).
+        offset: Start position in bytes (default: 0).
+        limit: Max bytes to return per call (default: 50000, max: 100000).
 
     Returns:
-        Document with title, content, url, source (name), and source_url.
-        Returns error if document not found.
+        Document with content chunk, pagination metadata (offset, length, total_length, has_more).
     """
     # Acquire lock briefly to ensure store connection is valid
     async with _refresh_lock:
@@ -380,12 +389,19 @@ async def get_doc(
     if not doc:
         raise ToolError(f"Document not found: {url}")
 
+    total_length = len(doc.content)
+    chunk = doc.content[offset : offset + limit]
+
     return DocumentResult(
         title=doc.title or "Untitled",
-        content=doc.content,
+        content=chunk,
         url=doc.doc_url,
         source=doc.source_name,
         source_url=doc.source_url,
+        offset=offset,
+        length=len(chunk),
+        total_length=total_length,
+        has_more=(offset + len(chunk)) < total_length,
     )
 
 
