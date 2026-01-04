@@ -93,21 +93,15 @@ class TestDoRefresh:
         mock_doc.title = "Test Doc"
         mock_doc.content = "Content"
 
-        # Close the read store before refresh to avoid DuckDB lock conflicts
-        app.store.close()
-
         with patch.object(
             app.fetcher,
             "fetch_all_from_source",
             new=AsyncMock(return_value=([mock_doc], [])),
         ):
-            try:
-                result = await do_refresh(app)
+            result = await do_refresh(app)
 
-                assert result.refreshed_count >= 0
-                assert result.indexed_documents >= 0
-            finally:
-                pass  # Store already closed
+            assert result.refreshed_count >= 0
+            assert result.indexed_documents >= 0
 
     @pytest.mark.asyncio
     async def test_do_refresh_with_errors(self, temp_db_path, sample_sources):
@@ -122,9 +116,6 @@ class TestDoRefresh:
         fetcher = DocumentFetcher()
 
         app = LLMDocApp(config=config, store=store, index=index, fetcher=fetcher)
-
-        # Close the read store before refresh to avoid DuckDB lock conflicts
-        app.store.close()
 
         with patch.object(
             app.fetcher,
@@ -151,9 +142,6 @@ class TestDoRefresh:
 
         # Start with empty index
         assert app.index.document_count == 0
-
-        # Close the read store before refresh to avoid DuckDB lock conflicts
-        app.store.close()
 
         mock_doc = MagicMock()
         mock_doc.url = "https://a.example.com/doc.md"

@@ -52,6 +52,10 @@ async def do_refresh(app: LLMDocApp) -> RefreshResult:
     Uses a separate write connection to allow multiple read-only instances.
     If another instance is refreshing, this will skip gracefully.
 
+    Note: Read operations will block during refresh since we hold the refresh lock
+    for the entire operation. This is necessary because DuckDB doesn't allow
+    having both read-only and read-write connections to the same database file.
+
     Args:
         app: The application instance.
 
@@ -80,87 +84,92 @@ async def do_refresh(app: LLMDocApp) -> RefreshResult:
         if ctx:
             await ctx.report_progress(progress=current, total=total)
 
-    # Try to acquire write lock first (before closing read connection)
-    # This allows read operations to continue during the check
-    try:
-        write_store = DocumentStore(app.config.db_path, read_only=False)
-    except duckdb.IOException as e:
-        if "lock" in str(e).lower():
-            await log_info("Database locked by another instance, skipping refresh")
-            return RefreshResult(
-                refreshed_count=0,
-                indexed_documents=app.index.document_count,
-                indexed_chunks=app.index.chunk_count,
-                sources=[],
-                skipped=True,
-                reason="Database locked by another instance",
-            )
-        raise
+    # Hold lock for entire refresh to prevent read operations from accessing
+    # a closed store connection. Reads will block but not fail.
+    async with _refresh_lock:
+        # Close read connection before trying to open write connection
+        # DuckDB doesn't allow read-only and read-write connections simultaneously
+        app.store.close()
 
-    total_docs = 0
-    all_errors: list[str] = []
-    source_stats: list[SourceRefreshStats] = []
-    total_sources = len(app.config.sources)
-
-    try:
-        # Fetch and write documents - app.store still usable for reads during this
-        for i, source in enumerate(app.config.sources):
-            await report_progress(i, total_sources)
-            await log_info(f"Refreshing source: {source.name} ({source.url})")
-
-            try:
-                documents, errors = await app.fetcher.fetch_all_from_source(source.url)
-                all_errors.extend(errors)
-
-                # Update store using write connection
-                valid_urls: set[str] = set()
-                for doc in documents:
-                    write_store.upsert_document(
-                        source_name=source.name,
-                        source_url=source.url,
-                        doc_url=doc.url,
-                        title=doc.title,
-                        content=doc.content,
-                    )
-                    valid_urls.add(doc.url)
-                    total_docs += 1
-
-                # Remove stale documents
-                deleted = write_store.delete_stale_documents(source.name, valid_urls)
-                if deleted:
-                    await log_info(f"Removed {deleted} stale documents from {source.name}")
-
-                source_stats.append(
-                    SourceRefreshStats(
-                        name=source.name,
-                        url=source.url,
-                        doc_count=len(documents),
-                        errors=len([e for e in errors if source.url in e]),
-                    )
-                )
-
-            except Exception as e:
-                error_msg = f"Failed to refresh {source.name}: {e}"
-                await log_error(error_msg)
-                all_errors.append(error_msg)
-
-        # Brief lock only during connection swap to prevent reads on closed connection
-        async with _refresh_lock:
-            write_store.close()
-            # Reopen read-only connection to see new data
-            app.store.close()
+        try:
+            write_store = DocumentStore(app.config.db_path, read_only=False)
+        except duckdb.IOException as e:
+            # Reopen read connection before returning
             app.store = DocumentStore(app.config.db_path, read_only=True)
+            if "lock" in str(e).lower():
+                await log_info("Database locked by another instance, skipping refresh")
+                return RefreshResult(
+                    refreshed_count=0,
+                    indexed_documents=app.index.document_count,
+                    indexed_chunks=app.index.chunk_count,
+                    sources=[],
+                    skipped=True,
+                    reason="Database locked by another instance",
+                )
+            raise
 
-        # Rebuild index from refreshed store (outside lock - index is thread-safe)
-        all_docs = app.store.get_all_documents()
-        app.index.build_index(all_docs)
-        await report_progress(total_sources, total_sources)
-        await log_info(f"Index rebuilt with {app.index.document_count} documents, {app.index.chunk_count} chunks")
+        total_docs = 0
+        all_errors: list[str] = []
+        source_stats: list[SourceRefreshStats] = []
+        total_sources = len(app.config.sources)
 
-    except Exception:
-        # On any error, ensure write_store is closed
-        write_store.close()
-        raise
+        try:
+            # Fetch and write documents
+            for i, source in enumerate(app.config.sources):
+                await report_progress(i, total_sources)
+                await log_info(f"Refreshing source: {source.name} ({source.url})")
+
+                try:
+                    documents, errors = await app.fetcher.fetch_all_from_source(source.url)
+                    all_errors.extend(errors)
+
+                    # Update store using write connection
+                    valid_urls: set[str] = set()
+                    for doc in documents:
+                        write_store.upsert_document(
+                            source_name=source.name,
+                            source_url=source.url,
+                            doc_url=doc.url,
+                            title=doc.title,
+                            content=doc.content,
+                        )
+                        valid_urls.add(doc.url)
+                        total_docs += 1
+
+                    # Remove stale documents
+                    deleted = write_store.delete_stale_documents(source.name, valid_urls)
+                    if deleted:
+                        await log_info(f"Removed {deleted} stale documents from {source.name}")
+
+                    source_stats.append(
+                        SourceRefreshStats(
+                            name=source.name,
+                            url=source.url,
+                            doc_count=len(documents),
+                            errors=len([e for e in errors if source.url in e]),
+                        )
+                    )
+
+                except Exception as e:
+                    error_msg = f"Failed to refresh {source.name}: {e}"
+                    await log_error(error_msg)
+                    all_errors.append(error_msg)
+
+            # Close write connection and reopen read-only to see new data
+            write_store.close()
+            app.store = DocumentStore(app.config.db_path, read_only=True)
+            all_docs = app.store.get_all_documents()
+
+            # Build index (still inside lock to ensure consistency)
+            app.index.build_index(all_docs)
+            await report_progress(total_sources, total_sources)
+            await log_info(f"Index rebuilt with {app.index.document_count} documents, {app.index.chunk_count} chunks")
+
+        except Exception:
+            # On any error, ensure write_store is closed and read store is restored
+            write_store.close()
+            app.store = DocumentStore(app.config.db_path, read_only=True)
+            raise
 
     return RefreshResult(
         refreshed_count=total_docs,
