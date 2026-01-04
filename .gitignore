@@ -66,12 +66,12 @@ env/*
 .venv/*
 .env/*
 
-address.txt
-private_keys.txt
-
 # Idea modules
 *.iml
 
-# Virtual environments
-.venv
+.ruff_cache
+.pytest_cache
+.mypy_cache
+
+.claude/
 CLAUDE.MD
