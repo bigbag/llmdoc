@@ -8,6 +8,8 @@ from typing import Annotated, Any
 
 import duckdb
 from fastmcp import FastMCP
+
+
 from fastmcp.dependencies import CurrentContext, Depends
 from fastmcp.exceptions import ToolError
 from fastmcp.server.context import Context
@@ -33,6 +35,9 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger(__name__)
+
+# Lock to prevent read operations during refresh (when store connection is closed/reopened)
+_refresh_lock = asyncio.Lock()
 
 
 def get_app() -> LLMDocApp:
@@ -77,16 +82,11 @@ async def do_refresh(app: LLMDocApp) -> RefreshResult:
         if ctx:
             await ctx.report_progress(progress=current, total=total)
 
-    # Close the read-only connection first - DuckDB doesn't allow mixing
-    # read-only and read-write connections to the same database file
-    app.store.close()
-
-    # Try to acquire write lock
+    # Try to acquire write lock first (before closing read connection)
+    # This allows read operations to continue during the check
     try:
         write_store = DocumentStore(app.config.db_path, read_only=False)
     except duckdb.IOException as e:
-        # Reopen read-only connection before returning
-        app.store = DocumentStore(app.config.db_path, read_only=True)
         if "lock" in str(e).lower():
             await log_info("Database locked by another instance, skipping refresh")
             return RefreshResult(
@@ -105,6 +105,7 @@ async def do_refresh(app: LLMDocApp) -> RefreshResult:
     total_sources = len(app.config.sources)
 
     try:
+        # Fetch and write documents - app.store still usable for reads during this
         for i, source in enumerate(app.config.sources):
             await report_progress(i, total_sources)
             await log_info(f"Refreshing source: {source.name} ({source.url})")
@@ -145,16 +146,23 @@ async def do_refresh(app: LLMDocApp) -> RefreshResult:
                 await log_error(error_msg)
                 all_errors.append(error_msg)
 
-        # Rebuild index from write store (has latest data)
-        all_docs = write_store.get_all_documents()
+        # Brief lock only during connection swap to prevent reads on closed connection
+        async with _refresh_lock:
+            write_store.close()
+            # Reopen read-only connection to see new data
+            app.store.close()
+            app.store = DocumentStore(app.config.db_path, read_only=True)
+
+        # Rebuild index from refreshed store (outside lock - index is thread-safe)
+        all_docs = app.store.get_all_documents()
         app.index.build_index(all_docs)
         await report_progress(total_sources, total_sources)
         await log_info(f"Index rebuilt with {app.index.document_count} documents, {app.index.chunk_count} chunks")
 
-    finally:
+    except Exception:
+        # On any error, ensure write_store is closed
         write_store.close()
-        # Reopen the read-only connection
-        app.store = DocumentStore(app.config.db_path, read_only=True)
+        raise
 
     return RefreshResult(
         refreshed_count=total_docs,
@@ -367,7 +375,9 @@ async def get_doc(
         Document with title, content, url, source (name), and source_url.
         Returns error if document not found.
     """
-    doc = app.store.get_document_by_url(url)
+    # Acquire lock briefly to ensure store connection is valid
+    async with _refresh_lock:
+        doc = app.store.get_document_by_url(url)
 
     if not doc:
         raise ToolError(f"Document not found: {url}")
@@ -413,8 +423,9 @@ async def get_doc_excerpt(
         Document metadata with list of relevant excerpts, each containing
         content, position, and relevance score.
     """
-    # Get document for metadata and context expansion
-    doc = app.store.get_document_by_url(url)
+    # Acquire lock briefly to ensure store connection is valid
+    async with _refresh_lock:
+        doc = app.store.get_document_by_url(url)
     if not doc:
         raise ToolError(f"Document not found: {url}")
 
@@ -470,7 +481,9 @@ async def list_sources(
     Returns:
         List of sources with name, url, doc_count, and last_updated.
     """
-    stats = app.store.get_source_stats()
+    # Acquire lock briefly to ensure store connection is valid
+    async with _refresh_lock:
+        stats = app.store.get_source_stats()
     stats_by_name = {s["name"]: s for s in stats}
 
     return [
