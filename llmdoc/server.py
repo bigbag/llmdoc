@@ -6,12 +6,10 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from typing import Annotated, Any
 
-import duckdb
 from fastmcp import FastMCP
 from fastmcp.dependencies import CurrentContext, Depends
 from fastmcp.exceptions import ToolError
 from fastmcp.server.context import Context
-from fastmcp.server.dependencies import get_context
 from pydantic import Field
 
 from .app import LLMDocApp
@@ -23,9 +21,8 @@ from .models import (
     RefreshResult,
     SearchResultItem,
     SourceInfo,
-    SourceRefreshStats,
 )
-from .store import DocumentStore
+from .refresh import do_refresh, periodic_refresh, refresh_lock
 
 # Configure logging
 logging.basicConfig(
@@ -34,9 +31,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Lock to prevent read operations during refresh (when store connection is closed/reopened)
-_refresh_lock = asyncio.Lock()
-
 
 def get_app() -> LLMDocApp:
     """Get app from server (set during lifespan)."""
@@ -44,161 +38,6 @@ def get_app() -> LLMDocApp:
     if app is None:
         raise RuntimeError("App not initialized - server not started")
     return app
-
-
-async def do_refresh(app: LLMDocApp) -> RefreshResult:
-    """Refresh all configured documentation sources.
-
-    Uses a separate write connection to allow multiple read-only instances.
-    If another instance is refreshing, this will skip gracefully.
-
-    Note: Read operations will block during refresh since we hold the refresh lock
-    for the entire operation. This is necessary because DuckDB doesn't allow
-    having both read-only and read-write connections to the same database file.
-
-    Args:
-        app: The application instance.
-
-    Returns:
-        RefreshResult with refresh statistics.
-    """
-    # Try to get context for logging/progress (None during startup/periodic refresh)
-    try:
-        ctx: Context | None = get_context()
-    except RuntimeError:
-        ctx = None
-
-    async def log_info(msg: str) -> None:
-        if ctx:
-            await ctx.info(msg)
-        else:
-            logger.info(msg)
-
-    async def log_error(msg: str) -> None:
-        if ctx:
-            await ctx.error(msg)
-        else:
-            logger.error(msg)
-
-    async def report_progress(current: int, total: int) -> None:
-        if ctx:
-            await ctx.report_progress(progress=current, total=total)
-
-    # Hold lock for entire refresh to prevent read operations from accessing
-    # a closed store connection. Reads will block but not fail.
-    async with _refresh_lock:
-        # Close read connection before trying to open write connection
-        # DuckDB doesn't allow read-only and read-write connections simultaneously
-        app.store.close()
-
-        try:
-            write_store = DocumentStore(app.config.db_path, read_only=False)
-        except duckdb.IOException as e:
-            # Reopen read connection before returning
-            app.store = DocumentStore(app.config.db_path, read_only=True)
-            if "lock" in str(e).lower():
-                await log_info("Database locked by another instance, skipping refresh")
-                return RefreshResult(
-                    refreshed_count=0,
-                    indexed_documents=app.index.document_count,
-                    indexed_chunks=app.index.chunk_count,
-                    sources=[],
-                    skipped=True,
-                    reason="Database locked by another instance",
-                )
-            raise
-
-        total_docs = 0
-        all_errors: list[str] = []
-        source_stats: list[SourceRefreshStats] = []
-        total_sources = len(app.config.sources)
-
-        try:
-            # Fetch and write documents
-            for i, source in enumerate(app.config.sources):
-                await report_progress(i, total_sources)
-                await log_info(f"Refreshing source: {source.name} ({source.url})")
-
-                try:
-                    documents, errors = await app.fetcher.fetch_all_from_source(source.url)
-                    all_errors.extend(errors)
-
-                    # Update store using write connection
-                    valid_urls: set[str] = set()
-                    for doc in documents:
-                        write_store.upsert_document(
-                            source_name=source.name,
-                            source_url=source.url,
-                            doc_url=doc.url,
-                            title=doc.title,
-                            content=doc.content,
-                        )
-                        valid_urls.add(doc.url)
-                        total_docs += 1
-
-                    # Remove stale documents
-                    deleted = write_store.delete_stale_documents(source.name, valid_urls)
-                    if deleted:
-                        await log_info(f"Removed {deleted} stale documents from {source.name}")
-
-                    source_stats.append(
-                        SourceRefreshStats(
-                            name=source.name,
-                            url=source.url,
-                            doc_count=len(documents),
-                            errors=len([e for e in errors if source.url in e]),
-                        )
-                    )
-
-                except Exception as e:
-                    error_msg = f"Failed to refresh {source.name}: {e}"
-                    await log_error(error_msg)
-                    all_errors.append(error_msg)
-
-            # Close write connection and reopen read-only to see new data
-            write_store.close()
-            app.store = DocumentStore(app.config.db_path, read_only=True)
-            all_docs = app.store.get_all_documents()
-
-            # Build index (still inside lock to ensure consistency)
-            app.index.build_index(all_docs)
-            await report_progress(total_sources, total_sources)
-            await log_info(f"Index rebuilt with {app.index.document_count} documents, {app.index.chunk_count} chunks")
-
-        except Exception:
-            # On any error, ensure write_store is closed and read store is restored
-            write_store.close()
-            app.store = DocumentStore(app.config.db_path, read_only=True)
-            raise
-
-    return RefreshResult(
-        refreshed_count=total_docs,
-        indexed_documents=app.index.document_count,
-        indexed_chunks=app.index.chunk_count,
-        sources=source_stats,
-        errors=all_errors if all_errors else None,
-    )
-
-
-async def _periodic_refresh(app: LLMDocApp) -> None:
-    """Background task for periodic refresh."""
-    interval_seconds = app.config.refresh_interval_hours * 3600
-    logger.info(f"Periodic refresh enabled: every {app.config.refresh_interval_hours} hours")
-
-    while True:
-        try:
-            await asyncio.sleep(interval_seconds)
-            logger.info("Starting scheduled refresh...")
-            result = await do_refresh(app)
-            if result.skipped:
-                logger.info(f"Refresh skipped: {result.reason}")
-            else:
-                logger.info(f"Scheduled refresh completed: {result.refreshed_count} docs")
-        except asyncio.CancelledError:
-            logger.info("Periodic refresh cancelled")
-            raise
-        except Exception as e:
-            logger.error(f"Scheduled refresh failed: {e}")
 
 
 @asynccontextmanager
@@ -265,17 +104,19 @@ async def lifespan(server: FastMCP):
 
         if needs_refresh:
             logger.info("Triggering startup refresh...")
-            await do_refresh(app)
+            try:
+                await do_refresh(app)
+            except Exception as e:
+                logger.error(f"Startup refresh failed: {e}")
         else:
             logger.info("All sources with data are fresh, skipping startup refresh")
 
     # Start periodic refresh task
-    refresh_task = asyncio.create_task(_periodic_refresh(app))
+    refresh_task = asyncio.create_task(periodic_refresh(app))
 
     try:
         yield
     finally:
-        # Cleanup
         refresh_task.cancel()
         try:
             await refresh_task
@@ -287,7 +128,6 @@ async def lifespan(server: FastMCP):
         logger.info("Server shutdown complete")
 
 
-# Create the FastMCP server
 mcp = FastMCP(
     name="LLMDoc",
     instructions="""
@@ -355,8 +195,7 @@ async def search_docs(
     ]
 
 
-# Default chunk size for pagination (50KB)
-DEFAULT_CHUNK_SIZE = 50_000
+DEFAULT_CHUNK_SIZE = 50_000  # 50KB
 
 
 @mcp.tool(
@@ -372,7 +211,12 @@ async def get_doc(
     url: Annotated[str, Field(description="The URL of the document (as returned by search_docs)")],
     offset: Annotated[int, Field(description="Start position in bytes (for pagination)", ge=0)] = 0,
     limit: Annotated[
-        int, Field(description="Max bytes to return (default 50000, max 100000)", ge=1000, le=100_000)
+        int,
+        Field(
+            description="Max bytes to return (default 50000, max 100000)",
+            ge=1000,
+            le=100_000,
+        ),
     ] = DEFAULT_CHUNK_SIZE,
     ctx: Context = CurrentContext(),
     app: LLMDocApp = Depends(get_app),
@@ -391,8 +235,7 @@ async def get_doc(
     Returns:
         Document with content chunk, pagination metadata (offset, length, total_length, has_more).
     """
-    # Acquire lock briefly to ensure store connection is valid
-    async with _refresh_lock:
+    async with refresh_lock:
         doc = app.store.get_document_by_url(url)
 
     if not doc:
@@ -447,7 +290,7 @@ async def get_doc_excerpt(
         content, position, and relevance score.
     """
     # Acquire lock briefly to ensure store connection is valid
-    async with _refresh_lock:
+    async with refresh_lock:
         doc = app.store.get_document_by_url(url)
     if not doc:
         raise ToolError(f"Document not found: {url}")
@@ -505,7 +348,7 @@ async def list_sources(
         List of sources with name, url, doc_count, and last_updated.
     """
     # Acquire lock briefly to ensure store connection is valid
-    async with _refresh_lock:
+    async with refresh_lock:
         stats = app.store.get_source_stats()
     stats_by_name = {s["name"]: s for s in stats}
 
@@ -542,7 +385,7 @@ async def refresh_sources(
     Returns:
         Dictionary with refreshed_count, indexed_documents, indexed_chunks, sources, and any errors.
     """
-    await ctx.info("Starting manual refresh...")
+    logger.info("Starting manual refresh...")
     return await do_refresh(app)
 
 

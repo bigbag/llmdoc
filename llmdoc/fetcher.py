@@ -135,16 +135,12 @@ class DocumentFetcher:
             content = response.text
             content_type = response.headers.get("content-type", "")
 
-            # Priority 1: Check URL extension (most reliable)
             if self._is_markdown_url(url) or self._is_text_url(url):
-                # Already markdown/text, use directly
                 pass
-            # Priority 2: Check content-type header
             elif "text/markdown" in content_type:
-                pass  # Already markdown
+                pass
             elif "text/html" in content_type:
                 content = self._convert_html_to_markdown(content)
-            # Priority 3: Inspect content for HTML (fallback)
             elif self._is_html(content):
                 content = self._convert_html_to_markdown(content)
 

@@ -49,6 +49,208 @@ Example sources:
 - [Pydantic](https://docs.pydantic.dev/latest/llms.txt)
 - [LangGraph](https://langchain-ai.github.io/langgraph/llms.txt)
 
+## Installation
+
+```bash
+# Run directly with uvx (no install needed)
+uvx llmdoc
+
+# Or install with uv
+uv tool install llmdoc
+
+# Or install with pip
+pip install llmdoc
+
+# Or install with pipx
+pipx install llmdoc
+```
+
+## Configuration
+
+### Source Format
+
+Sources can be specified in two formats:
+- **Named**: `name:url` - e.g., `fast_mcp:https://gofastmcp.com/llms.txt`
+- **Unnamed**: Just the URL - name is auto-generated from domain
+
+Named sources allow you to filter search results by source name.
+
+### Environment Variables
+
+```bash
+# Comma-separated list of sources (named or unnamed)
+export LLMDOC_SOURCES="fast_mcp:https://gofastmcp.com/llms.txt,pydantic_ai:https://ai.pydantic.dev/llms.txt"
+
+# Optional: Custom database path (default: ~/.llmdoc/index.db)
+export LLMDOC_DB_PATH="/path/to/index.db"
+
+# Optional: Refresh interval in hours (default: 6)
+export LLMDOC_REFRESH_INTERVAL="6"
+
+# Optional: Max concurrent document fetches (default: 5)
+export LLMDOC_MAX_CONCURRENT="5"
+
+# Optional: Skip refresh on startup (default: false)
+export LLMDOC_SKIP_STARTUP_REFRESH="true"
+```
+
+### Config File
+
+Create `llmdoc.json` in the working directory:
+
+```json
+{
+  "sources": [
+    "fast_mcp:https://gofastmcp.com/llms.txt",
+    "pydantic_ai:https://ai.pydantic.dev/llms.txt"
+  ],
+  "db_path": "~/.llmdoc/index.db",
+  "refresh_interval_hours": 6,
+  "max_concurrent_fetches": 5,
+  "skip_startup_refresh": false
+}
+```
+
+Or with explicit name/url objects:
+
+```json
+{
+  "sources": [
+    {"name": "fast_mcp", "url": "https://gofastmcp.com/llms.txt"},
+    {"name": "pydantic_ai", "url": "https://ai.pydantic.dev/llms.txt"}
+  ]
+}
+```
+
+## Running the Server
+
+LLMDoc uses stdio transport and is designed to be launched by MCP clients. Configure it in your MCP client (see below), and the client will start the server automatically.
+
+For manual testing:
+
+```bash
+# Using uvx
+uvx llmdoc
+
+# Or as module
+python -m llmdoc
+```
+
+## MCP Tools
+
+- `search_docs(query, limit, source)` - Search documentation and return relevant passages with source URLs. Optional `source` parameter filters by source name (e.g., `fast_mcp`)
+- `get_doc(url, offset, limit)` - Get document content with pagination support for large documents. Parameters: `offset` (default: 0) start position in bytes, `limit` (default: 50000, max: 100000) max bytes per call. Returns pagination metadata (`has_more`, `total_length`)
+- `get_doc_excerpt(url, query, max_chunks, context_chars)` - Get relevant excerpts from a large document matching a query
+- `list_sources()` - List all configured documentation sources with statistics
+- `refresh_sources()` - Manually trigger a refresh of all documentation
+
+## MCP Resources
+
+- `doc://sources` - Returns JSON with configured sources list and refresh interval
+
+## Adding to MCP Clients
+
+### Claude Code
+
+Add to `~/.claude/claude_code_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "llmdoc": {
+      "command": "uvx",
+      "args": ["llmdoc"],
+      "env": {
+        "LLMDOC_SOURCES": "fast_mcp:https://gofastmcp.com/llms.txt,pydantic_ai:https://ai.pydantic.dev/llms.txt"
+      }
+    }
+  }
+}
+```
+
+### Standard MCP Configuration
+
+Add to your MCP client's configuration file:
+
+```json
+{
+  "mcpServers": {
+    "llmdoc": {
+      "command": "uvx",
+      "args": ["llmdoc"],
+      "env": {
+        "LLMDOC_SOURCES": "fast_mcp:https://gofastmcp.com/llms.txt"
+      }
+    }
+  }
+}
+```
+
+## Example Usage
+
+Once configured, the LLM can use these tools:
+
+```
+User: How do I create a tool in FastMCP?
+
+LLM: [calls search_docs("create tool FastMCP")]
+
+Result:
+[
+  {
+    "title": "Tools",
+    "snippet": "Creating a tool is as simple as decorating a Python function with @mcp.tool...",
+    "url": "https://gofastmcp.com/servers/tools.md",
+    "source": "fast_mcp",
+    "source_url": "https://gofastmcp.com/llms.txt",
+    "score": 12.5
+  }
+]
+```
+
+### Filtering by Source
+
+You can filter results to a specific documentation source:
+
+```
+User: How do I create an agent in PydanticAI?
+
+LLM: [calls search_docs("create agent", source="pydantic_ai")]
+
+Result:
+[
+  {
+    "title": "Agents",
+    "snippet": "Agents are the primary interface for interacting with LLMs in PydanticAI...",
+    "url": "https://ai.pydantic.dev/agents.md",
+    "source": "pydantic_ai",
+    "source_url": "https://ai.pydantic.dev/llms.txt",
+    "score": 10.2
+  }
+]
+```
+
+### Getting Full Document Content
+
+Use `get_doc` to retrieve document content (supports pagination for large documents):
+
+```
+LLM: [calls get_doc("https://ai.pydantic.dev/agents.md")]
+
+Result:
+{
+  "title": "Agents",
+  "content": "# Agents\n\nAgents are the primary interface for interacting with LLMs in PydanticAI...",
+  "url": "https://ai.pydantic.dev/agents.md",
+  "source": "pydantic_ai",
+  "source_url": "https://ai.pydantic.dev/llms.txt",
+  "offset": 0,
+  "length": 5432,
+  "total_length": 5432,
+  "has_more": false
+}
+```
+
 ## Architecture
 
 ```
@@ -170,198 +372,6 @@ Document fetching uses `asyncio.Semaphore` to limit concurrent HTTP requests (de
 - Pronouns: I, you, he, she, it, we, they, etc.
 - Auxiliaries: is, are, was, were, be, been, being, etc.
 - Common verbs: have, has, had, do, does, did, etc.
-
-## Installation
-
-```bash
-# Run directly with uvx (no install needed)
-uvx llmdoc
-
-# Or install with uv
-uv tool install llmdoc
-
-# Or install with pip
-pip install llmdoc
-
-# Or install with pipx
-pipx install llmdoc
-```
-
-## Configuration
-
-### Source Format
-
-Sources can be specified in two formats:
-- **Named**: `name:url` - e.g., `fast_mcp:https://gofastmcp.com/llms.txt`
-- **Unnamed**: Just the URL - name is auto-generated from domain
-
-Named sources allow you to filter search results by source name.
-
-### Environment Variables
-
-```bash
-# Comma-separated list of sources (named or unnamed)
-export LLMDOC_SOURCES="fast_mcp:https://gofastmcp.com/llms.txt,pydantic_ai:https://ai.pydantic.dev/llms.txt"
-
-# Optional: Custom database path (default: ~/.llmdoc/index.db)
-export LLMDOC_DB_PATH="/path/to/index.db"
-
-# Optional: Refresh interval in hours (default: 6)
-export LLMDOC_REFRESH_INTERVAL="6"
-
-# Optional: Max concurrent document fetches (default: 5)
-export LLMDOC_MAX_CONCURRENT="5"
-```
-
-### Config File
-
-Create `llmdoc.json` in the working directory:
-
-```json
-{
-  "sources": [
-    "fast_mcp:https://gofastmcp.com/llms.txt",
-    "pydantic_ai:https://ai.pydantic.dev/llms.txt"
-  ],
-  "db_path": "~/.llmdoc/index.db",
-  "refresh_interval_hours": 6,
-  "max_concurrent_fetches": 5
-}
-```
-
-Or with explicit name/url objects:
-
-```json
-{
-  "sources": [
-    {"name": "fast_mcp", "url": "https://gofastmcp.com/llms.txt"},
-    {"name": "pydantic_ai", "url": "https://ai.pydantic.dev/llms.txt"}
-  ]
-}
-```
-
-## Running the Server
-
-LLMDoc uses stdio transport and is designed to be launched by MCP clients. Configure it in your MCP client (see below), and the client will start the server automatically.
-
-For manual testing:
-
-```bash
-# Using uvx
-uvx llmdoc
-
-# Or as module
-python -m llmdoc
-```
-
-## MCP Tools
-
-| Tool | Description |
-|------|-------------|
-| `search_docs(query, limit, source)` | Search documentation and return relevant passages with source URLs. Optional `source` parameter filters by source name (e.g., `fast_mcp`) |
-| `get_doc(url)` | Get the full content of a document by its URL (as returned by `search_docs`) |
-| `get_doc_excerpt(url, query, max_chunks, context_chars)` | Get relevant excerpts from a large document matching a query |
-| `list_sources()` | List all configured documentation sources with statistics |
-| `refresh_sources()` | Manually trigger a refresh of all documentation |
-
-## Adding to MCP Clients
-
-### Claude Code
-
-Add to `~/.claude/claude_code_config.json`:
-
-```json
-{
-  "mcpServers": {
-    "llmdoc": {
-      "command": "uvx",
-      "args": ["llmdoc"],
-      "env": {
-        "LLMDOC_SOURCES": "fast_mcp:https://gofastmcp.com/llms.txt,pydantic_ai:https://ai.pydantic.dev/llms.txt"
-      }
-    }
-  }
-}
-```
-
-### Standard MCP Configuration
-
-Add to your MCP client's configuration file:
-
-```json
-{
-  "mcpServers": {
-    "llmdoc": {
-      "command": "uvx",
-      "args": ["llmdoc"],
-      "env": {
-        "LLMDOC_SOURCES": "fast_mcp:https://gofastmcp.com/llms.txt"
-      }
-    }
-  }
-}
-```
-
-## Example Usage
-
-Once configured, the LLM can use these tools:
-
-```
-User: How do I create a tool in FastMCP?
-
-LLM: [calls search_docs("create tool FastMCP")]
-
-Result:
-[
-  {
-    "title": "Tools",
-    "snippet": "Creating a tool is as simple as decorating a Python function with @mcp.tool...",
-    "url": "https://gofastmcp.com/servers/tools.md",
-    "source": "fast_mcp",
-    "source_url": "https://gofastmcp.com/llms.txt",
-    "score": 12.5
-  }
-]
-```
-
-### Filtering by Source
-
-You can filter results to a specific documentation source:
-
-```
-User: How do I create an agent in PydanticAI?
-
-LLM: [calls search_docs("create agent", source="pydantic_ai")]
-
-Result:
-[
-  {
-    "title": "Agents",
-    "snippet": "Agents are the primary interface for interacting with LLMs in PydanticAI...",
-    "url": "https://ai.pydantic.dev/agents.md",
-    "source": "pydantic_ai",
-    "source_url": "https://ai.pydantic.dev/llms.txt",
-    "score": 10.2
-  }
-]
-```
-
-### Getting Full Document Content
-
-Use `get_doc` to retrieve the complete content of a document:
-
-```
-LLM: [calls get_doc("https://ai.pydantic.dev/agents.md")]
-
-Result:
-{
-  "title": "Agents",
-  "content": "# Agents\n\nAgents are the primary interface for interacting with LLMs in PydanticAI...",
-  "url": "https://ai.pydantic.dev/agents.md",
-  "source": "pydantic_ai",
-  "source_url": "https://ai.pydantic.dev/llms.txt"
-}
-```
 
 ## License
 
