@@ -142,9 +142,11 @@ clean:  ## Clear temporary information
 	@rm -rf .install-deps
 	@rm -rf *.egg-info
 	@rm -rf .pytest_cache
+	@rm -rf .ruff_cache
 	@rm -rf .mypy_cache
 	@rm -rf dist
 	@rm -rf test-reports
+
 
 ####################
 ### Tests
