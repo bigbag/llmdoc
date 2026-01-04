@@ -1,0 +1,60 @@
+[build-system]
+requires = ["uv_build>=0.9.21,<0.10.0"]
+build-backend = "uv_build"
+
+[project]
+name = "llmdoc"
+version = "0.1.0"
+description = "MCP server with RAG for llms.txt documentation"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+keywords = ["mcp", "llms-txt", "documentation", "rag", "bm25"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Documentation",
+    "Topic :: Text Processing :: Indexing",
+]
+dependencies = [
+    "duckdb>=1.4.3",
+    "httpx>=0.28.1",
+    "rank-bm25>=0.2.2",
+    "fastmcp>=2.0.0",
+    "markdownify>=0.14.1",
+]
+
+[project.scripts]
+llmdoc = "llmdoc.server:main"
+
+[dependency-groups]
+dev = [
+    "mypy>=1.16.0",
+    "pyclean>=3.1.0",
+    "pytest>=8.4.0",
+    "pytest-aio>=1.9.0",
+    "pytest-cov>=6.1.1",
+    "pytest-mock>=3.14.1",
+    "ruff>=0.9.0",
+]
+
+[tool.uv.build-backend]
+module-root = ""
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+exclude = ["build", "dist", ".venv", ".git", ".mypy_cache", ".tox", "migrations"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
+ignore = ["E203", "E501"]
+
+[tool.ruff.format]
+skip-magic-trailing-comma = false
