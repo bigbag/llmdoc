@@ -17,6 +17,28 @@ MCP server with RAG (BM25) for llms.txt documentation. Provides semantic search 
 - **Background refresh** - Configurable auto-refresh interval (default: 6 hours)
 - **Source attribution** - Every search result includes source name and URL
 
+## Quick Start
+
+1. Add to Claude Code (`~/.claude/claude_code_config.json`):
+
+```json
+{
+  "mcpServers": {
+    "llmdoc": {
+      "command": "uvx",
+      "args": ["llmdoc"],
+      "env": {
+        "LLMDOC_SOURCES": "fast_mcp:https://gofastmcp.com/llms.txt"
+      }
+    }
+  }
+}
+```
+
+2. Restart Claude Code - the server will automatically fetch and index documentation.
+
+3. Ask Claude questions like "How do I create a tool in FastMCP?" and it will search the indexed docs.
+
 ## What is llms.txt?
 
 [llms.txt](https://llmstxt.org) is a specification for providing LLM-friendly documentation. Websites add a `/llms.txt` markdown file to their root directory containing curated, concise content optimized for AI consumption. LLMDoc indexes these files and their linked documents to enable semantic search.
@@ -152,14 +174,17 @@ Document fetching uses `asyncio.Semaphore` to limit concurrent HTTP requests (de
 ## Installation
 
 ```bash
-# Run directly (no install needed)
+# Run directly with uvx (no install needed)
 uvx llmdoc
 
-# Or install as tool
+# Or install with uv
 uv tool install llmdoc
 
-# Or add to project
-uv add llmdoc
+# Or install with pip
+pip install llmdoc
+
+# Or install with pipx
+pipx install llmdoc
 ```
 
 ## Configuration

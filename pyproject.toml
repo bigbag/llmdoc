@@ -30,6 +30,11 @@ dependencies = [
     "markdownify>=0.14.1",
 ]
 
+[project.urls]
+Homepage = "https://github.com/bigbag/llmdoc"
+Repository = "https://github.com/bigbag/llmdoc"
+Issues = "https://github.com/bigbag/llmdoc/issues"
+
 [project.scripts]
 llmdoc = "llmdoc.server:main"
 
