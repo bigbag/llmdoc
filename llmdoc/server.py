@@ -8,8 +8,6 @@ from typing import Annotated, Any
 
 import duckdb
 from fastmcp import FastMCP
-
-
 from fastmcp.dependencies import CurrentContext, Depends
 from fastmcp.exceptions import ToolError
 from fastmcp.server.context import Context
