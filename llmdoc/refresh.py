@@ -1,10 +1,14 @@
 """Refresh logic for LLMDoc documentation sources."""
 
 import asyncio
+import contextlib
+import fcntl
 import logging
+import os
+import shutil
+from collections.abc import Generator
+from contextlib import contextmanager
 from typing import Any
-
-import duckdb
 
 from .app import LLMDocApp
 from .models import RefreshResult, SourceRefreshStats
@@ -12,8 +16,37 @@ from .store import DocumentStore
 
 logger = logging.getLogger(__name__)
 
-# Lock to prevent read operations during refresh (when store connection is closed/reopened)
+# Lock to prevent read operations during the brief swap phase
 refresh_lock = asyncio.Lock()
+
+
+@contextmanager
+def file_lock(lock_path: str) -> Generator[bool, None, None]:
+    """Cross-process file lock using fcntl.
+
+    Acquires an exclusive lock on the lock file. If another process holds
+    the lock, yields False immediately (non-blocking).
+
+    Args:
+        lock_path: Path to the lock file.
+
+    Yields:
+        True if lock was acquired, False if another process holds it.
+    """
+    lock_dir = os.path.dirname(lock_path)
+    if lock_dir:
+        os.makedirs(lock_dir, exist_ok=True)
+
+    lock_file = open(lock_path, "w")  # noqa: SIM115
+    try:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        yield True  # Lock acquired
+    except BlockingIOError:
+        yield False  # Another process has the lock
+    finally:
+        with contextlib.suppress(Exception):
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+        lock_file.close()
 
 
 async def _fetch_all_sources(
@@ -115,12 +148,14 @@ def _rebuild_index(app: LLMDocApp) -> None:
 async def do_refresh(app: LLMDocApp) -> RefreshResult:
     """Refresh all configured documentation sources.
 
-    Uses a separate write connection to allow multiple read-only instances.
-    If another instance is refreshing, this will skip gracefully.
+    Uses a shadow database pattern for zero-downtime updates:
+    1. Fetch all sources (no lock)
+    2. Write to temporary database (file lock for cross-process safety)
+    3. Atomic swap of temp DB to primary (brief asyncio lock)
+    4. Rebuild in-memory index
 
-    Note: Read operations will block during refresh since we hold the refresh lock
-    for the entire operation. This is necessary because DuckDB doesn't allow
-    having both read-only and read-write connections to the same database file.
+    Read operations are only blocked during the brief swap phase (~10ms),
+    not during the entire fetch/write operation.
 
     Args:
         app: The application instance.
@@ -128,55 +163,58 @@ async def do_refresh(app: LLMDocApp) -> RefreshResult:
     Returns:
         RefreshResult with refresh statistics.
     """
+    lock_path = app.config.db_path + ".lock"
+    temp_db_path = app.config.db_path + ".tmp"
+
     # Phase 1: Fetch all sources (no lock needed)
     fetched_data, all_errors = await _fetch_all_sources(app)
 
-    # Phase 2: Write to DB (with lock)
+    # Phase 2-3: Write to temp DB + atomic swap (with file lock)
     source_stats: list[SourceRefreshStats] = []
     total_docs = 0
 
-    async with refresh_lock:
-        # Close read connection before trying to open write connection
-        # DuckDB doesn't allow read-only and read-write connections simultaneously
-        app.store.close()
+    with file_lock(lock_path) as acquired:
+        if not acquired:
+            logger.info("Refresh locked by another instance, skipping")
+            return RefreshResult(
+                refreshed_count=0,
+                indexed_documents=app.index.document_count,
+                indexed_chunks=app.index.chunk_count,
+                sources=[],
+                skipped=True,
+                reason="Refresh locked by another instance",
+            )
+
+        # Copy current DB as base for temp (if exists)
+        if os.path.exists(app.config.db_path):
+            shutil.copy2(app.config.db_path, temp_db_path)
 
         try:
-            write_store = DocumentStore(app.config.db_path, read_only=False)
-        except duckdb.IOException as e:
-            # Reopen read connection before returning
-            app.store = DocumentStore(app.config.db_path, read_only=True)
-            if "lock" in str(e).lower():
-                logger.info("Database locked by another instance, skipping refresh")
-                return RefreshResult(
-                    refreshed_count=0,
-                    indexed_documents=app.index.document_count,
-                    indexed_chunks=app.index.chunk_count,
-                    sources=[],
-                    skipped=True,
-                    reason="Database locked by another instance",
-                )
-            raise
+            # Write to temp database
+            write_store = DocumentStore(temp_db_path, read_only=False)
 
-        try:
-            # Write documents for each source
             for source, documents, source_errors in fetched_data:
                 doc_count, stats, errors = _write_source_to_store(write_store, source, documents, source_errors)
                 total_docs += doc_count
                 source_stats.append(stats)
                 all_errors.extend(errors)
 
-            # Close write connection and reopen read-only to see new data
             write_store.close()
-            app.store = DocumentStore(app.config.db_path, read_only=True)
-
-            # Rebuild index from fresh store
-            _rebuild_index(app)
 
         except Exception:
-            # On any error, ensure write_store is closed and read store is restored
-            write_store.close()
-            app.store = DocumentStore(app.config.db_path, read_only=True)
+            # Clean up temp file on failure
+            if os.path.exists(temp_db_path):
+                os.remove(temp_db_path)
             raise
+
+        # Phase 3: Atomic swap (brief asyncio lock for in-process read safety)
+        async with refresh_lock:
+            app.store.close()
+            os.replace(temp_db_path, app.config.db_path)
+            app.store = DocumentStore(app.config.db_path, read_only=True)
+
+    # Phase 4: Rebuild index (outside locks)
+    _rebuild_index(app)
 
     return RefreshResult(
         refreshed_count=total_docs,

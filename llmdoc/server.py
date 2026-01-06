@@ -233,6 +233,8 @@ async def get_doc(
     Returns:
         Document with content chunk, pagination metadata (offset, length, total_length, has_more).
     """
+    # Brief lock to protect against store connection swap during refresh
+    # (only blocks during ~10ms atomic swap phase, not during fetch/write)
     async with refresh_lock:
         doc = app.store.get_document_by_url(url)
 
@@ -287,7 +289,8 @@ async def get_doc_excerpt(
         Document metadata with list of relevant excerpts, each containing
         content, position, and relevance score.
     """
-    # Acquire lock briefly to ensure store connection is valid
+    # Brief lock to protect against store connection swap during refresh
+    # (only blocks during ~10ms atomic swap phase, not during fetch/write)
     async with refresh_lock:
         doc = app.store.get_document_by_url(url)
     if not doc:
@@ -345,7 +348,8 @@ async def list_sources(
     Returns:
         List of sources with name, url, doc_count, and last_updated.
     """
-    # Acquire lock briefly to ensure store connection is valid
+    # Brief lock to protect against store connection swap during refresh
+    # (only blocks during ~10ms atomic swap phase, not during fetch/write)
     async with refresh_lock:
         stats = app.store.get_source_stats()
     stats_by_name = {s["name"]: s for s in stats}
