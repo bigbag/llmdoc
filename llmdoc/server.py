@@ -40,6 +40,18 @@ def get_app() -> LLMDocApp:
     return app
 
 
+async def _startup_refresh(app: LLMDocApp) -> None:
+    """Background task for initial startup refresh."""
+    try:
+        result = await do_refresh(app)
+        if result.skipped:
+            logger.info(f"Startup refresh skipped: {result.reason}")
+        else:
+            logger.info(f"Startup refresh completed: {result.refreshed_count} docs")
+    except Exception as e:
+        logger.error(f"Startup refresh failed: {e}")
+
+
 @asynccontextmanager
 async def lifespan(server: FastMCP):
     """Lifespan context manager for server startup/shutdown."""
@@ -103,13 +115,13 @@ async def lifespan(server: FastMCP):
                     logger.info(f"Source '{source.name}' is fresh (last updated: {source_stat['last_updated']})")
 
         if needs_refresh:
-            logger.info("Triggering startup refresh...")
-            try:
-                await do_refresh(app)
-            except Exception as e:
-                logger.error(f"Startup refresh failed: {e}")
+            logger.info("Scheduling background startup refresh...")
+            startup_refresh_task: asyncio.Task[None] | None = asyncio.create_task(_startup_refresh(app))
         else:
             logger.info("All sources with data are fresh, skipping startup refresh")
+            startup_refresh_task = None
+    else:
+        startup_refresh_task = None
 
     # Start periodic refresh task
     refresh_task = asyncio.create_task(periodic_refresh(app))
@@ -117,6 +129,12 @@ async def lifespan(server: FastMCP):
     try:
         yield
     finally:
+        # Cancel startup refresh if still running
+        if startup_refresh_task is not None and not startup_refresh_task.done():
+            startup_refresh_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await startup_refresh_task
+
         refresh_task.cancel()
         with suppress(asyncio.CancelledError):
             await refresh_task
