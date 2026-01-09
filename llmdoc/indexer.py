@@ -226,26 +226,17 @@ class SearchResult:
     score: float
 
 
+@dataclass
 class DocumentChunk:
     """A chunk of a document for indexing."""
 
-    def __init__(
-        self,
-        doc_id: int | None,
-        doc_url: str,
-        source_name: str,
-        source_url: str,
-        title: str | None,
-        content: str,
-        start_pos: int,
-    ) -> None:
-        self.doc_id = doc_id
-        self.doc_url = doc_url
-        self.source_name = source_name
-        self.source_url = source_url
-        self.title = title
-        self.content = content
-        self.start_pos = start_pos
+    doc_id: int | None
+    doc_url: str
+    source_name: str
+    source_url: str
+    title: str | None
+    content: str
+    start_pos: int
 
 
 class BM25Index:
@@ -277,6 +268,28 @@ class BM25Index:
         # Simple word tokenization with lowercasing and stopword removal
         words = WORD_PATTERN.findall(text.lower())
         return [w for w in words if w not in STOPWORDS and len(w) > 1]
+
+    @staticmethod
+    def _create_chunk(doc: Document, content: str, start_pos: int) -> DocumentChunk:
+        """Create a DocumentChunk from a document and content.
+
+        Args:
+            doc: The source document.
+            content: The chunk content.
+            start_pos: The start position in the original document.
+
+        Returns:
+            A DocumentChunk instance.
+        """
+        return DocumentChunk(
+            doc_id=doc.id,
+            doc_url=doc.doc_url,
+            source_name=doc.source_name,
+            source_url=doc.source_url,
+            title=doc.title,
+            content=content,
+            start_pos=start_pos,
+        )
 
     def _chunk_document(self, doc: Document) -> list[DocumentChunk]:
         """Split a document into chunks for indexing.
@@ -311,17 +324,7 @@ class BM25Index:
             else:
                 # Save current chunk if it has content
                 if current_chunk:
-                    chunks.append(
-                        DocumentChunk(
-                            doc_id=doc.id,
-                            doc_url=doc.doc_url,
-                            source_name=doc.source_name,
-                            source_url=doc.source_url,
-                            title=doc.title,
-                            content=current_chunk,
-                            start_pos=current_start,
-                        )
-                    )
+                    chunks.append(self._create_chunk(doc, current_chunk, current_start))
                     current_start += len(current_chunk)
 
                 # Start new chunk with overlap
@@ -339,17 +342,7 @@ class BM25Index:
 
                         chunk_text = para[para_start:para_end]
                         if chunk_text.strip():
-                            chunks.append(
-                                DocumentChunk(
-                                    doc_id=doc.id,
-                                    doc_url=doc.doc_url,
-                                    source_name=doc.source_name,
-                                    source_url=doc.source_url,
-                                    title=doc.title,
-                                    content=chunk_text,
-                                    start_pos=current_start + para_start,
-                                )
-                            )
+                            chunks.append(self._create_chunk(doc, chunk_text, current_start + para_start))
 
                         # Move forward with overlap, but ensure progress
                         next_start = para_end - self.chunk_overlap
@@ -361,31 +354,11 @@ class BM25Index:
 
         # Don't forget the last chunk
         if current_chunk:
-            chunks.append(
-                DocumentChunk(
-                    doc_id=doc.id,
-                    doc_url=doc.doc_url,
-                    source_name=doc.source_name,
-                    source_url=doc.source_url,
-                    title=doc.title,
-                    content=current_chunk,
-                    start_pos=current_start,
-                )
-            )
+            chunks.append(self._create_chunk(doc, current_chunk, current_start))
 
         # If no chunks were created (very short document), use the whole content
         if not chunks and content.strip():
-            chunks.append(
-                DocumentChunk(
-                    doc_id=doc.id,
-                    doc_url=doc.doc_url,
-                    source_name=doc.source_name,
-                    source_url=doc.source_url,
-                    title=doc.title,
-                    content=content.strip(),
-                    start_pos=0,
-                )
-            )
+            chunks.append(self._create_chunk(doc, content.strip(), 0))
 
         return chunks
 

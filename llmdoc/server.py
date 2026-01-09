@@ -196,19 +196,22 @@ async def search_docs(
         List of search results with title, snippet, url, source (name), source_url, and score.
     """
     await ctx.debug(f"Searching for: {query}")
-    results = app.index.search(query, limit=limit, source_filter=source)
 
-    return [
-        SearchResultItem(
-            title=r.title or "Untitled",
-            snippet=r.snippet,
-            url=r.doc_url,
-            source=r.source_name,
-            source_url=r.source_url,
-            score=round(r.score, 4),
-        )
-        for r in results
-    ]
+    # Lock to protect against store/index swap during refresh
+    async with refresh_lock:
+        results = app.index.search(query, limit=limit, source_filter=source)
+
+        return [
+            SearchResultItem(
+                title=r.title or "Untitled",
+                snippet=r.snippet,
+                url=r.doc_url,
+                source=r.source_name,
+                source_url=r.source_url,
+                score=round(r.score, 4),
+            )
+            for r in results
+        ]
 
 
 DEFAULT_CHUNK_SIZE = 50_000  # 50KB
@@ -251,28 +254,26 @@ async def get_doc(
     Returns:
         Document with content chunk, pagination metadata (offset, length, total_length, has_more).
     """
-    # Brief lock to protect against store connection swap during refresh
-    # (only blocks during ~10ms atomic swap phase, not during fetch/write)
+    # Lock to protect against store/index swap during refresh
     async with refresh_lock:
         doc = app.store.get_document_by_url(url)
+        if not doc:
+            raise ToolError(f"Document not found: {url}")
 
-    if not doc:
-        raise ToolError(f"Document not found: {url}")
+        total_length = len(doc.content)
+        chunk = doc.content[offset : offset + limit]
 
-    total_length = len(doc.content)
-    chunk = doc.content[offset : offset + limit]
-
-    return DocumentResult(
-        title=doc.title or "Untitled",
-        content=chunk,
-        url=doc.doc_url,
-        source=doc.source_name,
-        source_url=doc.source_url,
-        offset=offset,
-        length=len(chunk),
-        total_length=total_length,
-        has_more=(offset + len(chunk)) < total_length,
-    )
+        return DocumentResult(
+            title=doc.title or "Untitled",
+            content=chunk,
+            url=doc.doc_url,
+            source=doc.source_name,
+            source_url=doc.source_url,
+            offset=offset,
+            length=len(chunk),
+            total_length=total_length,
+            has_more=(offset + len(chunk)) < total_length,
+        )
 
 
 @mcp.tool(
@@ -307,42 +308,41 @@ async def get_doc_excerpt(
         Document metadata with list of relevant excerpts, each containing
         content, position, and relevance score.
     """
-    # Brief lock to protect against store connection swap during refresh
-    # (only blocks during ~10ms atomic swap phase, not during fetch/write)
+    # Lock to protect against store/index swap during refresh
     async with refresh_lock:
         doc = app.store.get_document_by_url(url)
-    if not doc:
-        raise ToolError(f"Document not found: {url}")
+        if not doc:
+            raise ToolError(f"Document not found: {url}")
 
-    # Search within document
-    results = app.index.search_within_document(url, query, top_k=max_chunks)
-    if not results:
-        raise ToolError(f"No relevant excerpts found for query: {query}")
+        # Search within document
+        results = app.index.search_within_document(url, query, top_k=max_chunks)
+        if not results:
+            raise ToolError(f"No relevant excerpts found for query: {query}")
 
-    # Expand context and build excerpts
-    excerpts: list[ExcerptItem] = []
-    content = doc.content
-    for chunk, score in results:
-        start = max(0, chunk.start_pos - context_chars)
-        end = min(len(content), chunk.start_pos + len(chunk.content) + context_chars)
+        # Expand context and build excerpts
+        excerpts: list[ExcerptItem] = []
+        content = doc.content
+        for chunk, score in results:
+            start = max(0, chunk.start_pos - context_chars)
+            end = min(len(content), chunk.start_pos + len(chunk.content) + context_chars)
 
-        excerpts.append(
-            ExcerptItem(
-                content=content[start:end],
-                start_pos=start,
-                end_pos=end,
-                score=round(score, 4),
+            excerpts.append(
+                ExcerptItem(
+                    content=content[start:end],
+                    start_pos=start,
+                    end_pos=end,
+                    score=round(score, 4),
+                )
             )
-        )
 
-    return DocumentExcerptResult(
-        title=doc.title or "Untitled",
-        url=doc.doc_url,
-        source=doc.source_name,
-        source_url=doc.source_url,
-        total_length=len(content),
-        excerpts=excerpts,
-    )
+        return DocumentExcerptResult(
+            title=doc.title or "Untitled",
+            url=doc.doc_url,
+            source=doc.source_name,
+            source_url=doc.source_url,
+            total_length=len(content),
+            excerpts=excerpts,
+        )
 
 
 @mcp.tool(

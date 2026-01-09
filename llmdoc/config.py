@@ -66,8 +66,12 @@ class Config:
     skip_startup_refresh: bool = False
 
     def __post_init__(self) -> None:
-        """Expand paths after initialization."""
+        """Expand paths and validate values after initialization."""
         self.db_path = os.path.expanduser(self.db_path)
+        # Validate refresh_interval_hours (1 hour minimum, 168 hours = 1 week maximum)
+        self.refresh_interval_hours = max(1, min(168, self.refresh_interval_hours))
+        # Validate max_concurrent_fetches (1-20)
+        self.max_concurrent_fetches = max(1, min(20, self.max_concurrent_fetches))
 
     @property
     def db_dir(self) -> Path:

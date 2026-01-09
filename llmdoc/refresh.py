@@ -189,6 +189,7 @@ async def do_refresh(app: LLMDocApp) -> RefreshResult:
         if os.path.exists(app.config.db_path):
             shutil.copy2(app.config.db_path, temp_db_path)
 
+        write_store = None
         try:
             # Write to temp database
             write_store = DocumentStore(temp_db_path, read_only=False)
@@ -199,22 +200,22 @@ async def do_refresh(app: LLMDocApp) -> RefreshResult:
                 source_stats.append(stats)
                 all_errors.extend(errors)
 
-            write_store.close()
-
         except Exception:
             # Clean up temp file on failure
             if os.path.exists(temp_db_path):
                 os.remove(temp_db_path)
             raise
+        finally:
+            if write_store is not None:
+                write_store.close()
 
-        # Phase 3: Atomic swap (brief asyncio lock for in-process read safety)
+        # Phase 3: Atomic swap + rebuild index (asyncio lock for in-process read safety)
         async with refresh_lock:
             app.store.close()
             os.replace(temp_db_path, app.config.db_path)
             app.store = DocumentStore(app.config.db_path, read_only=True)
-
-    # Phase 4: Rebuild index (outside locks)
-    _rebuild_index(app)
+            # Rebuild index inside lock to prevent searches during rebuild
+            _rebuild_index(app)
 
     return RefreshResult(
         refreshed_count=total_docs,

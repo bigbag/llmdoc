@@ -39,7 +39,7 @@ class DocumentFetcher:
         """
         self.timeout = timeout
         self.max_concurrent = max_concurrent
-        self._semaphore: asyncio.Semaphore | None = None
+        self._semaphore = asyncio.Semaphore(max_concurrent)
 
     async def fetch_url(self, url: str) -> str:
         """Fetch content from a URL.
@@ -157,9 +157,6 @@ class DocumentFetcher:
         Raises:
             httpx.HTTPError: If the request fails.
         """
-        if self._semaphore is None:
-            self._semaphore = asyncio.Semaphore(self.max_concurrent)
-
         async with self._semaphore:
             return await self.fetch_document(url)
 
@@ -211,7 +208,7 @@ class DocumentFetcher:
                 results = await asyncio.gather(*tasks, return_exceptions=True)
 
                 # Process results
-                for link, result in zip(links, results, strict=False):
+                for link, result in zip(links, results, strict=True):
                     if isinstance(result, BaseException):
                         errors.append(f"Failed to fetch {link.url}: {result}")
                     else:

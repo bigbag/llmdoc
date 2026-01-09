@@ -119,6 +119,28 @@ class DocumentStore:
         """Compute a hash of the content for change detection."""
         return hashlib.sha256(content.encode("utf-8")).hexdigest()
 
+    @staticmethod
+    def _row_to_document(row: tuple) -> Document:
+        """Convert a database row to a Document.
+
+        Args:
+            row: Database row tuple (id, source_name, source_url, doc_url,
+                 title, content, content_hash, updated_at).
+
+        Returns:
+            Document instance.
+        """
+        return Document(
+            id=row[0],
+            source_name=row[1],
+            source_url=row[2],
+            doc_url=row[3],
+            title=row[4],
+            content=row[5],
+            content_hash=row[6],
+            updated_at=row[7],
+        )
+
     def upsert_document(
         self,
         source_name: str,
@@ -224,19 +246,7 @@ class DocumentStore:
             """
         ).fetchall()
 
-        return [
-            Document(
-                id=row[0],
-                source_name=row[1],
-                source_url=row[2],
-                doc_url=row[3],
-                title=row[4],
-                content=row[5],
-                content_hash=row[6],
-                updated_at=row[7],
-            )
-            for row in rows
-        ]
+        return [self._row_to_document(row) for row in rows]
 
     def get_document_by_url(self, doc_url: str) -> Document | None:
         """Get a document by its URL.
@@ -261,16 +271,7 @@ class DocumentStore:
         if not row:
             return None
 
-        return Document(
-            id=row[0],
-            source_name=row[1],
-            source_url=row[2],
-            doc_url=row[3],
-            title=row[4],
-            content=row[5],
-            content_hash=row[6],
-            updated_at=row[7],
-        )
+        return self._row_to_document(row)
 
     def delete_stale_documents(self, source_name: str, valid_urls: set[str]) -> int:
         """Delete documents from a source that are no longer valid.

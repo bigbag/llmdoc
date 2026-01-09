@@ -4,12 +4,12 @@ build-backend = "uv_build"
 
 [project]
 name = "llmdoc"
-version = "0.1.11"
+version = "0.1.12"
 description = "MCP server with RAG for llms.txt documentation"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"
-authors = [{ name = "Author", email = "pavel.liashkov@protonmail.com" }]
+authors = [{ name = "Pavel Liashkov", email = "pavel.liashkov@protonamil.com" }]
 keywords = ["mcp", "llms-txt", "documentation", "rag", "bm25"]
 classifiers = [
     "Development Status :: 4 - Beta",
