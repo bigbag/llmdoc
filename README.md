@@ -2,6 +2,7 @@
 
 [![CI](https://github.com/bigbag/llmdoc/workflows/CI/badge.svg)](https://github.com/bigbag/llmdoc/actions?query=workflow%3ACI)
 [![pypi](https://img.shields.io/pypi/v/llmdoc.svg)](https://pypi.python.org/pypi/llmdoc)
+[![downloads](https://img.shields.io/pypi/dm/llmdoc.svg)](https://pypistats.org/packages/llmdoc)
 [![versions](https://img.shields.io/pypi/pyversions/llmdoc.svg)](https://github.com/bigbag/llmdoc)
 [![license](https://img.shields.io/github/license/bigbag/llmdoc.svg)](https://github.com/bigbag/llmdoc/blob/master/LICENSE)
 
