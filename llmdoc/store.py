@@ -291,9 +291,7 @@ class DocumentStore:
                 conn.commit()
             return count
 
-        current_urls = conn.execute(
-            "SELECT doc_url FROM documents WHERE source_name = ?", [source_name]
-        ).fetchall()
+        current_urls = conn.execute("SELECT doc_url FROM documents WHERE source_name = ?", [source_name]).fetchall()
 
         stale_urls = [url[0] for url in current_urls if url[0] not in valid_urls]
 
