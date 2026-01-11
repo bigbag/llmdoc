@@ -11,7 +11,7 @@ MCP server with RAG (BM25) for llms.txt documentation. Provides semantic search 
 ## Features
 
 - **llms.txt support** - Automatically parses and indexes documentation from llms.txt files
-- **BM25 search** - Fast, keyword-based retrieval with relevance scoring and stopword filtering
+- **Hybrid two-stage search** - DuckDB FTS with Porter stemming for broad recall, BM25 reranking for precision
 - **Named sources** - Configure sources with names like `fast_mcp:https://...` for easy filtering
 - **Source filtering** - Search across all sources or filter by specific source name
 - **Persistent storage** - DuckDB-based index that survives restarts
@@ -299,9 +299,16 @@ Documents are processed for efficient search:
 3. **Indexing**: BM25 algorithm indexes all chunks for relevance scoring
 
 ### Search
-When you search:
-1. Your query is tokenized the same way as documents
-2. BM25 scores each chunk against your query
+LLMDoc uses a hybrid two-stage retrieval approach:
+
+**Stage 1 - DuckDB FTS (Recall):**
+1. Query is processed by DuckDB's full-text search with Porter stemming
+2. "running" matches "run", "café" matches "cafe"
+3. Top 100 candidate chunks are retrieved
+
+**Stage 2 - Python BM25 (Precision):**
+1. Candidates are re-scored using exact-match BM25
+2. Documents with exact query terms rank higher
 3. Results are deduplicated by document URL
 4. Top results are returned with relevance scores and snippets
 
@@ -314,15 +321,21 @@ LLMDoc automatically keeps documentation up-to-date:
 
 ## Technical Details
 
-### BM25 Search Algorithm
+### Hybrid Two-Stage Search
 
-LLMDoc uses the BM25Okapi algorithm from the `rank_bm25` library. Key characteristics:
+LLMDoc combines DuckDB's native FTS with Python BM25 for optimal search quality:
 
-- **Term frequency saturation**: Diminishing returns for repeated terms
-- **Document length normalization**: Shorter documents aren't unfairly penalized
-- **IDF weighting**: Rare terms are weighted higher than common ones
+**Stage 1 - DuckDB FTS:**
+- Porter stemming normalizes words (running → run, documents → document)
+- Accent handling (café → cafe)
+- 571 built-in English stopwords
+- Fast candidate retrieval using native C implementation
 
-The implementation is thread-safe using `threading.RLock()` for concurrent access.
+**Stage 2 - Python BM25:**
+- BM25Okapi algorithm from `rank_bm25` library
+- Exact term matching boosts precise matches
+- Term frequency saturation, document length normalization, IDF weighting
+- Thread-safe using `threading.RLock()`
 
 ### Chunking Strategy
 
@@ -338,7 +351,7 @@ Configuration:
 
 ### Database Schema
 
-DuckDB stores documents with this schema:
+DuckDB stores documents and chunks:
 
 ```sql
 CREATE TABLE documents (
@@ -351,9 +364,17 @@ CREATE TABLE documents (
     content_hash TEXT NOT NULL,   -- SHA256 for change detection
     updated_at TIMESTAMP NOT NULL
 )
+
+CREATE TABLE chunks (
+    id INTEGER PRIMARY KEY,
+    doc_id INTEGER NOT NULL,      -- references documents.id
+    content TEXT NOT NULL,        -- chunk text for FTS indexing
+    start_pos INTEGER NOT NULL,   -- position in original document
+    end_pos INTEGER NOT NULL
+)
 ```
 
-Indexes on `source_url` and `source_name` for efficient filtering.
+FTS index on chunks table with Porter stemmer for hybrid search.
 
 ### Concurrency Model
 
@@ -367,12 +388,9 @@ Document fetching uses `asyncio.Semaphore` to limit concurrent HTTP requests (de
 
 ### Stopwords
 
-213 English stopwords are filtered during tokenization, including:
-- Articles: a, an, the
-- Prepositions: in, on, at, by, for, with, about, etc.
-- Pronouns: I, you, he, she, it, we, they, etc.
-- Auxiliaries: is, are, was, were, be, been, being, etc.
-- Common verbs: have, has, had, do, does, did, etc.
+Two stopword lists are used:
+- **DuckDB FTS (Stage 1)**: 571 built-in English stopwords
+- **Python BM25 (Stage 2)**: 209 custom stopwords including articles, prepositions, pronouns, auxiliaries, and common verbs
 
 ## License
 

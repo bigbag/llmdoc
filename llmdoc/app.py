@@ -36,14 +36,13 @@ class LLMDocApp:
             init_store = DocumentStore(config.db_path, read_only=False)
             init_store.close()
 
-        # Initialize store in read-only mode (allows multiple instances)
         store = DocumentStore(config.db_path, read_only=True)
 
-        # Initialize index and load existing documents
-        index = BM25Index()
+        index = BM25Index(store=store)
         existing_docs = store.get_all_documents()
         if existing_docs:
             index.build_index(existing_docs)
+            index.sync_chunk_ids_from_store()
 
         # Initialize fetcher with concurrency limit
         fetcher = DocumentFetcher(max_concurrent=config.max_concurrent_fetches)

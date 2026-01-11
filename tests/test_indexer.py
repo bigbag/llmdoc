@@ -181,6 +181,7 @@ class TestDocumentChunk:
     def test_create_chunk(self):
         """Test creating a document chunk."""
         chunk = DocumentChunk(
+            id=None,
             doc_id=1,
             doc_url="https://example.com/doc.md",
             source_name="test",
@@ -188,12 +189,14 @@ class TestDocumentChunk:
             title="Test",
             content="Test content",
             start_pos=0,
+            end_pos=12,
         )
 
         assert chunk.doc_id == 1
         assert chunk.doc_url == "https://example.com/doc.md"
         assert chunk.content == "Test content"
         assert chunk.start_pos == 0
+        assert chunk.end_pos == 12
 
 
 class TestChunking:

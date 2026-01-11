@@ -1,12 +1,27 @@
 """DuckDB storage layer for documents."""
 
+import contextlib
 import hashlib
+import logging
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
 import duckdb
 from duckdb import DuckDBPyConnection
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class Chunk:
+    """A stored chunk of a document."""
+
+    id: int
+    doc_id: int
+    content: str
+    start_pos: int
+    end_pos: int
 
 
 @dataclass
@@ -93,6 +108,20 @@ class DocumentStore:
         )
         conn.execute("CREATE INDEX IF NOT EXISTS idx_doc_url ON documents(doc_url)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_source_name ON documents(source_name)")
+
+        conn.execute("CREATE SEQUENCE IF NOT EXISTS chunks_id_seq")
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS chunks (
+                id INTEGER PRIMARY KEY DEFAULT nextval('chunks_id_seq'),
+                doc_id INTEGER NOT NULL,
+                content TEXT NOT NULL,
+                start_pos INTEGER NOT NULL,
+                end_pos INTEGER NOT NULL
+            )
+            """
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_chunks_doc_id ON chunks(doc_id)")
 
         table_info = conn.execute("PRAGMA table_info(documents)").fetchall()
         column_names = [info[1] for info in table_info]
@@ -323,6 +352,107 @@ class DocumentStore:
             }
             for row in rows
         ]
+
+    def store_chunks(self, doc_id: int, chunks: list[tuple[str, int, int]]) -> None:
+        """Store chunks for a document.
+
+        Args:
+            doc_id: The document ID.
+            chunks: List of (content, start_pos, end_pos) tuples.
+        """
+        conn = self._ensure_connected()
+        conn.execute("DELETE FROM chunks WHERE doc_id = ?", [doc_id])
+        for content, start_pos, end_pos in chunks:
+            conn.execute(
+                "INSERT INTO chunks (doc_id, content, start_pos, end_pos) VALUES (?, ?, ?, ?)",
+                [doc_id, content, start_pos, end_pos],
+            )
+        conn.commit()
+
+    def clear_all_chunks(self) -> None:
+        """Remove all chunks from the store."""
+        conn = self._ensure_connected()
+        conn.execute("DELETE FROM chunks")
+        conn.commit()
+
+    def get_all_chunks(self) -> list[tuple[Chunk, Document]]:
+        """Get all chunks with their parent documents."""
+        conn = self._ensure_connected()
+        rows = conn.execute(
+            """
+            SELECT c.id, c.doc_id, c.content, c.start_pos, c.end_pos,
+                   d.id, d.source_name, d.source_url, d.doc_url, d.title,
+                   d.content, d.content_hash, d.updated_at
+            FROM chunks c
+            JOIN documents d ON c.doc_id = d.id
+            """
+        ).fetchall()
+        return [
+            (
+                Chunk(id=row[0], doc_id=row[1], content=row[2], start_pos=row[3], end_pos=row[4]),
+                Document(
+                    id=row[5],
+                    source_name=row[6],
+                    source_url=row[7],
+                    doc_url=row[8],
+                    title=row[9],
+                    content=row[10],
+                    content_hash=row[11],
+                    updated_at=row[12],
+                ),
+            )
+            for row in rows
+        ]
+
+    def create_fts_index(self) -> None:
+        """Create FTS index on chunks table with Porter stemming."""
+        conn = self._ensure_connected()
+        conn.execute("INSTALL fts")
+        conn.execute("LOAD fts")
+
+        with contextlib.suppress(duckdb.CatalogException):
+            conn.execute("PRAGMA drop_fts_index('chunks')")
+
+        conn.execute(
+            """
+            PRAGMA create_fts_index(
+                'chunks', 'id', 'content',
+                stemmer='porter',
+                stopwords='english',
+                strip_accents=1,
+                lower=1,
+                overwrite=1
+            )
+            """
+        )
+        logger.info("FTS index created on chunks table")
+
+    def get_fts_candidates(self, query: str, limit: int = 100) -> list[int]:
+        """Get chunk IDs matching query via FTS with stemming.
+
+        Args:
+            query: The search query.
+            limit: Maximum number of candidates to return.
+
+        Returns:
+            List of chunk IDs sorted by FTS score descending.
+        """
+        conn = self._ensure_connected()
+        try:
+            conn.execute("LOAD fts")
+            rows = conn.execute(
+                """
+                SELECT id, fts_main_chunks.match_bm25(id, ?) AS score
+                FROM chunks
+                WHERE score IS NOT NULL
+                ORDER BY score DESC
+                LIMIT ?
+                """,
+                [query, limit],
+            ).fetchall()
+            return [row[0] for row in rows]
+        except duckdb.CatalogException:
+            return []
 
     def close(self) -> None:
         """Close the database connection."""

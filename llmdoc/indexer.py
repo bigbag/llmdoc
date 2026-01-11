@@ -1,12 +1,18 @@
 """BM25 indexing for document search."""
 
+from __future__ import annotations
+
 import re
 import threading
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from rank_bm25 import BM25Okapi
 
 from .store import Document
+
+if TYPE_CHECKING:
+    from .store import DocumentStore
 
 WORD_PATTERN = re.compile(r"\b\w+\b")
 PARAGRAPH_PATTERN = re.compile(r"\n\s*\n")
@@ -226,6 +232,7 @@ class SearchResult:
 class DocumentChunk:
     """A chunk of a document for indexing."""
 
+    id: int | None
     doc_id: int | None
     doc_url: str
     source_name: str
@@ -233,22 +240,28 @@ class DocumentChunk:
     title: str | None
     content: str
     start_pos: int
+    end_pos: int
 
 
 class BM25Index:
-    """BM25-based search index for documents."""
+    """BM25-based search index for documents with two-stage retrieval.
 
-    def __init__(self, chunk_size: int = 500, chunk_overlap: int = 100) -> None:
-        """Initialize the index.
+    Stage 1: DuckDB FTS with Porter stemming for broad recall
+    Stage 2: Python BM25 for exact-match reranking
+    """
 
-        Args:
-            chunk_size: Target size for document chunks (in characters).
-            chunk_overlap: Overlap between chunks (in characters).
-        """
+    def __init__(
+        self,
+        chunk_size: int = 500,
+        chunk_overlap: int = 100,
+        store: DocumentStore | None = None,
+    ) -> None:
         self.chunk_size = chunk_size
         self.chunk_overlap = chunk_overlap
+        self._store = store
         self._index: BM25Okapi | None = None
         self._chunks: list[DocumentChunk] = []
+        self._chunk_id_map: dict[int, int] = {}
         self._lock = threading.RLock()
 
     @staticmethod
@@ -265,18 +278,20 @@ class BM25Index:
         return [w for w in words if w not in STOPWORDS and len(w) > 1]
 
     @staticmethod
-    def _create_chunk(doc: Document, content: str, start_pos: int) -> DocumentChunk:
+    def _create_chunk(doc: Document, content: str, start_pos: int, end_pos: int) -> DocumentChunk:
         """Create a DocumentChunk from a document and content.
 
         Args:
             doc: The source document.
             content: The chunk content.
             start_pos: The start position in the original document.
+            end_pos: The end position in the original document.
 
         Returns:
             A DocumentChunk instance.
         """
         return DocumentChunk(
+            id=None,
             doc_id=doc.id,
             doc_url=doc.doc_url,
             source_name=doc.source_name,
@@ -284,6 +299,7 @@ class BM25Index:
             title=doc.title,
             content=content,
             start_pos=start_pos,
+            end_pos=end_pos,
         )
 
     def _chunk_document(self, doc: Document) -> list[DocumentChunk]:
@@ -317,6 +333,7 @@ class BM25Index:
 
         current_chunk = ""
         current_chunk_start = 0
+        current_chunk_end = 0
 
         for para_start_pos, para_end_pos in paragraph_positions:
             para = content[para_start_pos:para_end_pos].strip()
@@ -329,13 +346,15 @@ class BM25Index:
                 else:
                     current_chunk = para
                     current_chunk_start = para_start_pos
+                current_chunk_end = para_start_pos + len(para)
             else:
                 if current_chunk:
-                    chunks.append(self._create_chunk(doc, current_chunk, current_chunk_start))
+                    chunks.append(self._create_chunk(doc, current_chunk, current_chunk_start, current_chunk_end))
 
                 if len(para) <= self.chunk_size:
                     current_chunk = para
                     current_chunk_start = para_start_pos
+                    current_chunk_end = para_start_pos + len(para)
                 else:
                     inner_start = 0
                     while inner_start < len(para):
@@ -347,7 +366,8 @@ class BM25Index:
                         chunk_text = para[inner_start:inner_end]
                         if chunk_text.strip():
                             chunk_pos = para_start_pos + inner_start
-                            chunks.append(self._create_chunk(doc, chunk_text, chunk_pos))
+                            chunk_end = para_start_pos + inner_end
+                            chunks.append(self._create_chunk(doc, chunk_text, chunk_pos, chunk_end))
 
                         next_start = inner_end - self.chunk_overlap
                         if next_start <= inner_start:
@@ -356,23 +376,25 @@ class BM25Index:
 
                     current_chunk = ""
                     current_chunk_start = 0
+                    current_chunk_end = 0
 
         if current_chunk:
-            chunks.append(self._create_chunk(doc, current_chunk, current_chunk_start))
+            chunks.append(self._create_chunk(doc, current_chunk, current_chunk_start, current_chunk_end))
 
         if not chunks and content.strip():
-            chunks.append(self._create_chunk(doc, content.strip(), 0))
+            chunks.append(self._create_chunk(doc, content.strip(), 0, len(content.strip())))
 
         return chunks
 
     def build_index(self, documents: list[Document]) -> None:
-        """Build the BM25 index from documents.
+        """Build the in-memory BM25 index from documents.
 
         Args:
             documents: List of documents to index.
         """
         with self._lock:
             self._chunks = []
+            self._chunk_id_map = {}
 
             for doc in documents:
                 self._chunks.extend(self._chunk_document(doc))
@@ -383,8 +405,40 @@ class BM25Index:
             else:
                 self._index = None
 
+    def sync_chunk_ids_from_store(self) -> None:
+        """Sync chunk IDs from store for FTS candidate lookup."""
+        if not self._store:
+            return
+
+        with self._lock:
+            stored = self._store.get_all_chunks()
+            self._chunk_id_map = {}
+
+            for db_chunk, doc in stored:
+                for i, chunk in enumerate(self._chunks):
+                    if (
+                        chunk.doc_url == doc.doc_url
+                        and chunk.start_pos == db_chunk.start_pos
+                        and chunk.end_pos == db_chunk.end_pos
+                    ):
+                        chunk.id = db_chunk.id
+                        self._chunk_id_map[db_chunk.id] = i
+                        break
+
+    def generate_chunks_for_document(self, doc: Document) -> list[tuple[str, int, int]]:
+        """Generate chunk data for a document (for storage during refresh).
+
+        Args:
+            doc: The document to generate chunks for.
+
+        Returns:
+            List of (content, start_pos, end_pos) tuples.
+        """
+        chunks = self._chunk_document(doc)
+        return [(c.content, c.start_pos, c.end_pos) for c in chunks]
+
     def search(self, query: str, limit: int = 5, source_filter: str | None = None) -> list[SearchResult]:
-        """Search the index for relevant documents.
+        """Search using two-stage retrieval: FTS for recall, BM25 for reranking.
 
         Args:
             query: The search query.
@@ -402,18 +456,27 @@ class BM25Index:
             if not query_tokens:
                 return []
 
+            candidate_indices: set[int] | None = None
+            if self._store and self._chunk_id_map:
+                fts_ids = self._store.get_fts_candidates(query, limit=100)
+                if fts_ids:
+                    candidate_indices = {self._chunk_id_map[cid] for cid in fts_ids if cid in self._chunk_id_map}
+
             scores = self._index.get_scores(query_tokens)
 
-            scored_chunks = list(zip(self._chunks, scores, strict=False))
+            if candidate_indices is not None:
+                scored_chunks = [(self._chunks[i], scores[i]) for i in candidate_indices if scores[i] > 0]
+            else:
+                scored_chunks = [
+                    (chunk, score) for chunk, score in zip(self._chunks, scores, strict=False) if score > 0
+                ]
+
             scored_chunks.sort(key=lambda x: x[1], reverse=True)
 
             seen_urls: set[str] = set()
             results: list[SearchResult] = []
 
             for chunk, score in scored_chunks:
-                if score <= 0:
-                    continue
-
                 if source_filter and chunk.source_name != source_filter:
                     continue
 

@@ -86,6 +86,7 @@ def _write_source_to_store(
     source: Any,
     documents: list,
     source_errors: list[str],
+    index: Any,
 ) -> tuple[int, SourceRefreshStats, list[str]]:
     """Write documents for a single source to the store.
 
@@ -94,6 +95,7 @@ def _write_source_to_store(
         source: The source configuration.
         documents: List of fetched documents.
         source_errors: Errors from fetching this source.
+        index: The BM25Index for generating chunks.
 
     Returns:
         Tuple of (doc_count, stats, errors).
@@ -104,7 +106,7 @@ def _write_source_to_store(
 
     try:
         for doc in documents:
-            write_store.upsert_document(
+            stored_doc = write_store.upsert_document(
                 source_name=source.name,
                 source_url=source.url,
                 doc_url=doc.url,
@@ -113,6 +115,22 @@ def _write_source_to_store(
             )
             valid_urls.add(doc.url)
             doc_count += 1
+
+            if stored_doc.id is not None:
+                from .store import Document as StoreDoc
+
+                store_doc = StoreDoc(
+                    id=stored_doc.id,
+                    source_name=source.name,
+                    source_url=source.url,
+                    doc_url=doc.url,
+                    title=doc.title,
+                    content=doc.content,
+                    content_hash=stored_doc.content_hash,
+                    updated_at=stored_doc.updated_at,
+                )
+                chunk_data = index.generate_chunks_for_document(store_doc)
+                write_store.store_chunks(stored_doc.id, chunk_data)
 
         deleted = write_store.delete_stale_documents(source.name, valid_urls)
         if deleted:
@@ -141,6 +159,7 @@ def _rebuild_index(app: LLMDocApp) -> None:
     """
     all_docs = app.store.get_all_documents()
     app.index.build_index(all_docs)
+    app.index.sync_chunk_ids_from_store()
     logger.info(f"Index rebuilt with {app.index.document_count} documents, {app.index.chunk_count} chunks")
 
 
@@ -192,10 +211,14 @@ async def do_refresh(app: LLMDocApp) -> RefreshResult:
             write_store = DocumentStore(temp_db_path, read_only=False)
 
             for source, documents, source_errors in fetched_data:
-                doc_count, stats, errors = _write_source_to_store(write_store, source, documents, source_errors)
+                doc_count, stats, errors = _write_source_to_store(
+                    write_store, source, documents, source_errors, app.index
+                )
                 total_docs += doc_count
                 source_stats.append(stats)
                 all_errors.extend(errors)
+
+            write_store.create_fts_index()
 
         except Exception:
             if os.path.exists(temp_db_path):
