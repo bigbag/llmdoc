@@ -40,9 +40,9 @@ def file_lock(lock_path: str) -> Generator[bool, None, None]:
     lock_file = open(lock_path, "w")  # noqa: SIM115
     try:
         fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        yield True  # Lock acquired
+        yield True
     except BlockingIOError:
-        yield False  # Another process has the lock
+        yield False
     finally:
         with contextlib.suppress(Exception):
             fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
@@ -114,7 +114,6 @@ def _write_source_to_store(
             valid_urls.add(doc.url)
             doc_count += 1
 
-        # Remove stale documents
         deleted = write_store.delete_stale_documents(source.name, valid_urls)
         if deleted:
             logger.info(f"Removed {deleted} stale documents from {source.name}")
@@ -128,7 +127,7 @@ def _write_source_to_store(
         name=source.name,
         url=source.url,
         doc_count=len(documents),
-        errors=len([e for e in source_errors if source.url in e]),
+        errors=len(source_errors),
     )
 
     return doc_count, stats, errors
@@ -185,13 +184,11 @@ async def do_refresh(app: LLMDocApp) -> RefreshResult:
                 reason="Refresh locked by another instance",
             )
 
-        # Copy current DB as base for temp (if exists)
         if os.path.exists(app.config.db_path):
             shutil.copy2(app.config.db_path, temp_db_path)
 
         write_store = None
         try:
-            # Write to temp database
             write_store = DocumentStore(temp_db_path, read_only=False)
 
             for source, documents, source_errors in fetched_data:
@@ -201,7 +198,6 @@ async def do_refresh(app: LLMDocApp) -> RefreshResult:
                 all_errors.extend(errors)
 
         except Exception:
-            # Clean up temp file on failure
             if os.path.exists(temp_db_path):
                 os.remove(temp_db_path)
             raise
@@ -209,12 +205,10 @@ async def do_refresh(app: LLMDocApp) -> RefreshResult:
             if write_store is not None:
                 write_store.close()
 
-        # Phase 3: Atomic swap + rebuild index (asyncio lock for in-process read safety)
         async with refresh_lock:
             app.store.close()
             os.replace(temp_db_path, app.config.db_path)
             app.store = DocumentStore(app.config.db_path, read_only=True)
-            # Rebuild index inside lock to prevent searches during rebuild
             _rebuild_index(app)
 
     return RefreshResult(

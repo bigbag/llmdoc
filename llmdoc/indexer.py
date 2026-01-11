@@ -8,11 +8,8 @@ from rank_bm25 import BM25Okapi
 
 from .store import Document
 
-# Compiled regex patterns
 WORD_PATTERN = re.compile(r"\b\w+\b")
 PARAGRAPH_PATTERN = re.compile(r"\n\s*\n")
-
-# Sentence boundary markers for smarter chunking
 SENTENCE_BOUNDARIES = [".\n", ". ", "!\n", "! ", "?\n", "? "]
 
 
@@ -38,7 +35,6 @@ def _find_sentence_boundary(text: str, start: int, end: int) -> int:
     return end
 
 
-# English stopwords for BM25 tokenization
 STOPWORDS = frozenset(
     [
         "a",
@@ -265,7 +261,6 @@ class BM25Index:
         Returns:
             List of tokens (lowercased words).
         """
-        # Simple word tokenization with lowercasing and stopword removal
         words = WORD_PATTERN.findall(text.lower())
         return [w for w in words if w not in STOPWORDS and len(w) > 1]
 
@@ -295,6 +290,7 @@ class BM25Index:
         """Split a document into chunks for indexing.
 
         Uses paragraph-based chunking with fallback to character-based.
+        Tracks actual positions in the original document content.
 
         Args:
             doc: The document to chunk.
@@ -305,14 +301,25 @@ class BM25Index:
         content = doc.content
         chunks: list[DocumentChunk] = []
 
-        # Try to split on paragraphs (double newlines)
-        paragraphs = PARAGRAPH_PATTERN.split(content)
+        paragraph_positions: list[tuple[int, int]] = []
+        last_end = 0
+
+        for match in PARAGRAPH_PATTERN.finditer(content):
+            if match.start() > last_end:
+                paragraph_positions.append((last_end, match.start()))
+            last_end = match.end()
+
+        if last_end < len(content):
+            paragraph_positions.append((last_end, len(content)))
+
+        if not paragraph_positions and content.strip():
+            paragraph_positions.append((0, len(content)))
 
         current_chunk = ""
-        current_start = 0
+        current_chunk_start = 0
 
-        for para in paragraphs:
-            para = para.strip()
+        for para_start_pos, para_end_pos in paragraph_positions:
+            para = content[para_start_pos:para_end_pos].strip()
             if not para:
                 continue
 
@@ -321,42 +328,38 @@ class BM25Index:
                     current_chunk += "\n\n" + para
                 else:
                     current_chunk = para
+                    current_chunk_start = para_start_pos
             else:
-                # Save current chunk if it has content
                 if current_chunk:
-                    chunks.append(self._create_chunk(doc, current_chunk, current_start))
-                    current_start += len(current_chunk)
+                    chunks.append(self._create_chunk(doc, current_chunk, current_chunk_start))
 
-                # Start new chunk with overlap
                 if len(para) <= self.chunk_size:
                     current_chunk = para
+                    current_chunk_start = para_start_pos
                 else:
-                    # Paragraph too long, split with sentence boundary awareness
-                    para_start = 0
-                    while para_start < len(para):
-                        para_end = min(para_start + self.chunk_size, len(para))
+                    inner_start = 0
+                    while inner_start < len(para):
+                        inner_end = min(inner_start + self.chunk_size, len(para))
 
-                        # Try to break at sentence boundary if not at end
-                        if para_end < len(para):
-                            para_end = _find_sentence_boundary(para, para_start, para_end)
+                        if inner_end < len(para):
+                            inner_end = _find_sentence_boundary(para, inner_start, inner_end)
 
-                        chunk_text = para[para_start:para_end]
+                        chunk_text = para[inner_start:inner_end]
                         if chunk_text.strip():
-                            chunks.append(self._create_chunk(doc, chunk_text, current_start + para_start))
+                            chunk_pos = para_start_pos + inner_start
+                            chunks.append(self._create_chunk(doc, chunk_text, chunk_pos))
 
-                        # Move forward with overlap, but ensure progress
-                        next_start = para_end - self.chunk_overlap
-                        if next_start <= para_start:
-                            next_start = para_end  # Ensure forward progress
-                        para_start = next_start
+                        next_start = inner_end - self.chunk_overlap
+                        if next_start <= inner_start:
+                            next_start = inner_end
+                        inner_start = next_start
 
                     current_chunk = ""
+                    current_chunk_start = 0
 
-        # Don't forget the last chunk
         if current_chunk:
-            chunks.append(self._create_chunk(doc, current_chunk, current_start))
+            chunks.append(self._create_chunk(doc, current_chunk, current_chunk_start))
 
-        # If no chunks were created (very short document), use the whole content
         if not chunks and content.strip():
             chunks.append(self._create_chunk(doc, content.strip(), 0))
 
@@ -375,7 +378,6 @@ class BM25Index:
                 self._chunks.extend(self._chunk_document(doc))
 
             if self._chunks:
-                # Tokenize all chunks
                 tokenized_corpus = [self._tokenize(chunk.content) for chunk in self._chunks]
                 self._index = BM25Okapi(tokenized_corpus)
             else:
@@ -396,19 +398,15 @@ class BM25Index:
             if not self._index or not self._chunks:
                 return []
 
-            # Tokenize query
             query_tokens = self._tokenize(query)
             if not query_tokens:
                 return []
 
-            # Get BM25 scores
             scores = self._index.get_scores(query_tokens)
 
-            # Get top results
             scored_chunks = list(zip(self._chunks, scores, strict=False))
             scored_chunks.sort(key=lambda x: x[1], reverse=True)
 
-            # Deduplicate by document URL (keep highest score)
             seen_urls: set[str] = set()
             results: list[SearchResult] = []
 
@@ -416,14 +414,12 @@ class BM25Index:
                 if score <= 0:
                     continue
 
-                # Apply source filter if provided
                 if source_filter and chunk.source_name != source_filter:
                     continue
 
                 if chunk.doc_url not in seen_urls:
                     seen_urls.add(chunk.doc_url)
 
-                    # Create snippet (first 200 chars of the chunk)
                     snippet = chunk.content[:200]
                     if len(chunk.content) > 200:
                         snippet += "..."
@@ -478,7 +474,6 @@ class BM25Index:
             if not self._index or not self._chunks:
                 return []
 
-            # Find indices of chunks for this document
             doc_indices = [i for i, c in enumerate(self._chunks) if c.doc_url == doc_url]
             if not doc_indices:
                 return []
@@ -487,12 +482,9 @@ class BM25Index:
             if not query_tokens:
                 return []
 
-            # Get BM25 scores for all chunks
             all_scores = self._index.get_scores(query_tokens)
 
-            # Filter to only chunks from target document
             scored_chunks = [(self._chunks[i], all_scores[i]) for i in doc_indices]
             scored_chunks.sort(key=lambda x: x[1], reverse=True)
 
-            # Return top_k with positive scores
             return [(c, s) for c, s in scored_chunks[:top_k] if s > 0]

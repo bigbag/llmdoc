@@ -52,7 +52,13 @@ class DocumentStore:
             if self.conn:
                 self.conn.execute("SELECT 1")
                 return self.conn
-        except (duckdb.ConnectionException, AttributeError, Exception):
+        except (
+            duckdb.ConnectionException,
+            duckdb.IOException,
+            duckdb.OperationalError,
+            duckdb.InvalidInputException,
+            AttributeError,
+        ):
             pass
 
         # Reconnect on any failure
@@ -69,7 +75,6 @@ class DocumentStore:
     def _init_schema(self) -> None:
         """Initialize the database schema."""
         conn = self._ensure_connected()
-        # Create sequence for auto-incrementing id
         conn.execute("CREATE SEQUENCE IF NOT EXISTS documents_id_seq")
 
         conn.execute(
@@ -93,9 +98,7 @@ class DocumentStore:
         column_names = [info[1] for info in table_info]
 
         if "source_name" not in column_names:
-            # Add source_name column with default value from source_url
             conn.execute("ALTER TABLE documents ADD COLUMN source_name TEXT DEFAULT ''")
-            # Update existing rows to extract name from URL
             conn.execute(
                 """
                 UPDATE documents
@@ -108,7 +111,6 @@ class DocumentStore:
                 """
             )
 
-        # Remove fetched_at column if it exists (no longer needed)
         if "fetched_at" in column_names:
             conn.execute("ALTER TABLE documents DROP COLUMN fetched_at")
 
@@ -165,7 +167,6 @@ class DocumentStore:
         now = datetime.now()
 
         conn = self._ensure_connected()
-        # Check if document exists
         existing = conn.execute(
             "SELECT id, content_hash FROM documents WHERE doc_url = ?",
             [doc_url],
@@ -174,7 +175,6 @@ class DocumentStore:
         if existing:
             doc_id, old_hash = existing
             if old_hash != content_hash:
-                # Content changed, update
                 conn.execute(
                     """
                     UPDATE documents
@@ -193,7 +193,6 @@ class DocumentStore:
                     ],
                 )
             else:
-                # Content unchanged, but update timestamp to track last fetch
                 conn.execute(
                     "UPDATE documents SET updated_at = ? WHERE id = ?",
                     [now, doc_id],
@@ -210,7 +209,6 @@ class DocumentStore:
                 updated_at=now,
             )
         else:
-            # Insert new document
             conn.execute(
                 """
                 INSERT INTO documents (source_name, source_url, doc_url, title, content,
@@ -220,7 +218,6 @@ class DocumentStore:
                 [source_name, source_url, doc_url, title, content, content_hash, now],
             )
             conn.commit()
-            # Get the inserted ID
             result = conn.execute("SELECT id FROM documents WHERE doc_url = ?", [doc_url]).fetchone()
             doc_id = result[0] if result else None
 
@@ -285,13 +282,18 @@ class DocumentStore:
         """
         conn = self._ensure_connected()
         if not valid_urls:
-            # Delete all documents from this source
-            result = conn.execute("DELETE FROM documents WHERE source_name = ?", [source_name])
-            conn.commit()
-            return result.rowcount if hasattr(result, "rowcount") else 0
+            count_result = conn.execute(
+                "SELECT COUNT(*) FROM documents WHERE source_name = ?", [source_name]
+            ).fetchone()
+            count = count_result[0] if count_result else 0
+            if count > 0:
+                conn.execute("DELETE FROM documents WHERE source_name = ?", [source_name])
+                conn.commit()
+            return count
 
-        # Get current doc URLs for this source
-        current_urls = conn.execute("SELECT doc_url FROM documents WHERE source_name = ?", [source_name]).fetchall()
+        current_urls = conn.execute(
+            "SELECT doc_url FROM documents WHERE source_name = ?", [source_name]
+        ).fetchall()
 
         stale_urls = [url[0] for url in current_urls if url[0] not in valid_urls]
 
