@@ -74,4 +74,4 @@ env/*
 .mypy_cache
 
 .claude/
-CLAUDE.MD
+CLAUDE.md
