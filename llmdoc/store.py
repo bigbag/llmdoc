@@ -362,11 +362,15 @@ class DocumentStore:
         """
         conn = self._ensure_connected()
         conn.execute("DELETE FROM chunks WHERE doc_id = ?", [doc_id])
-        for content, start_pos, end_pos in chunks:
-            conn.execute(
-                "INSERT INTO chunks (doc_id, content, start_pos, end_pos) VALUES (?, ?, ?, ?)",
-                [doc_id, content, start_pos, end_pos],
-            )
+
+        if not chunks:
+            conn.commit()
+            return
+
+        conn.executemany(
+            "INSERT INTO chunks (doc_id, content, start_pos, end_pos) VALUES (?, ?, ?, ?)",
+            [(doc_id, content, start_pos, end_pos) for content, start_pos, end_pos in chunks],
+        )
         conn.commit()
 
     def clear_all_chunks(self) -> None:
