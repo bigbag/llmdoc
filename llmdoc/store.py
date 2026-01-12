@@ -436,7 +436,7 @@ class DocumentStore:
             # Try to query the FTS index - if it doesn't exist, this will fail
             conn.execute("SELECT * FROM fts_main_chunks.docs LIMIT 0")
             return True
-        except duckdb.CatalogException:
+        except (duckdb.CatalogException, duckdb.IOException):
             return False
 
     def create_fts_index(self) -> None:
@@ -486,7 +486,7 @@ class DocumentStore:
                 [query, limit],
             ).fetchall()
             return [row[0] for row in rows]
-        except duckdb.CatalogException:
+        except (duckdb.CatalogException, duckdb.IOException):
             return []
 
     def close(self) -> None:
