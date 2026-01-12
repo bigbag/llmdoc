@@ -122,3 +122,130 @@ class TestLLMDocApp:
             assert hasattr(app, "fetcher")
         finally:
             app.close()
+
+    def test_app_enable_fts_default(self, sample_config):
+        """Test that FTS is enabled by default."""
+        app = LLMDocApp.create(sample_config)
+        try:
+            assert app.config.enable_fts is True
+            assert app.index._enable_fts is True
+        finally:
+            app.close()
+
+    def test_app_enable_fts_false(self, tmp_path):
+        """Test creating app with FTS disabled."""
+        config = Config(
+            sources=[Source(name="test", url="https://example.com/llms.txt")],
+            db_path=str(tmp_path / "test.db"),
+            enable_fts=False,
+        )
+
+        app = LLMDocApp.create(config)
+        try:
+            assert app.config.enable_fts is False
+            assert app.index._enable_fts is False
+        finally:
+            app.close()
+
+    def test_app_creates_fts_index_when_missing(self, temp_db_path, sample_documents):
+        """Test that app creates FTS index on startup if enabled but missing."""
+        from llmdoc.store import DocumentStore
+
+        # Create DB without FTS index (simulate enable_fts=False scenario)
+        store = DocumentStore(temp_db_path, read_only=False)
+        for doc in sample_documents:
+            store.upsert_document(
+                source_name=doc.source_name,
+                source_url=doc.source_url,
+                doc_url=doc.doc_url,
+                title=doc.title,
+                content=doc.content,
+            )
+        # Store chunks but don't create FTS index
+        store.close()
+
+        # Verify no FTS index exists
+        store = DocumentStore(temp_db_path, read_only=True)
+        assert store.has_fts_index() is False
+        store.close()
+
+        # Create app with enable_fts=True
+        config = Config(
+            sources=[Source(name="test", url="https://example.com/llms.txt")],
+            db_path=temp_db_path,
+            enable_fts=True,
+        )
+
+        app = LLMDocApp.create(config)
+        try:
+            # FTS index should have been created
+            assert app.store.has_fts_index() is True
+        finally:
+            app.close()
+
+    def test_app_skips_fts_index_creation_when_disabled(self, temp_db_path, sample_documents):
+        """Test that app doesn't create FTS index when enable_fts=False."""
+        from llmdoc.store import DocumentStore
+
+        # Create DB without FTS index
+        store = DocumentStore(temp_db_path, read_only=False)
+        for doc in sample_documents:
+            store.upsert_document(
+                source_name=doc.source_name,
+                source_url=doc.source_url,
+                doc_url=doc.doc_url,
+                title=doc.title,
+                content=doc.content,
+            )
+        store.close()
+
+        # Create app with enable_fts=False
+        config = Config(
+            sources=[Source(name="test", url="https://example.com/llms.txt")],
+            db_path=temp_db_path,
+            enable_fts=False,
+        )
+
+        app = LLMDocApp.create(config)
+        try:
+            # FTS index should NOT have been created
+            assert app.store.has_fts_index() is False
+        finally:
+            app.close()
+
+    def test_app_preserves_existing_fts_index(self, temp_db_path, sample_documents):
+        """Test that app doesn't recreate FTS index if it already exists."""
+        from llmdoc.store import DocumentStore
+
+        # Create DB with FTS index
+        store = DocumentStore(temp_db_path, read_only=False)
+        for doc in sample_documents:
+            store.upsert_document(
+                source_name=doc.source_name,
+                source_url=doc.source_url,
+                doc_url=doc.doc_url,
+                title=doc.title,
+                content=doc.content,
+            )
+        # Create some chunks and FTS index
+        store.bulk_store_all_chunks([(1, "test content", 0, 12)])
+        store.create_fts_index()
+        store.close()
+
+        # Verify FTS index exists
+        store = DocumentStore(temp_db_path, read_only=True)
+        assert store.has_fts_index() is True
+        store.close()
+
+        # Create app - should not fail
+        config = Config(
+            sources=[Source(name="test", url="https://example.com/llms.txt")],
+            db_path=temp_db_path,
+            enable_fts=True,
+        )
+
+        app = LLMDocApp.create(config)
+        try:
+            assert app.store.has_fts_index() is True
+        finally:
+            app.close()

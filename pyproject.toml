@@ -4,7 +4,7 @@ build-backend = "uv_build"
 
 [project]
 name = "llmdoc"
-version = "0.2.0"
+version = "0.2.1"
 description = "MCP server with RAG for llms.txt documentation"
 readme = "README.md"
 license = "MIT"
@@ -71,6 +71,7 @@ python_files = ["test_*.py"]
 python_functions = ["test_*"]
 addopts = "-v --tb=short --cov=llmdoc --cov-report=term-missing"
 mock_traceback_monkeypatch = false
+markers = ["asyncio: mark test as async"]
 
 [tool.mypy]
 python_version = "3.10"

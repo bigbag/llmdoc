@@ -221,3 +221,164 @@ class TestDocumentStore:
             doc = store.get_document_by_url("https://example.com/doc.md")
             assert doc is not None
             assert doc.title == "Test"
+
+
+class TestFTSIndex:
+    """Tests for FTS index related methods."""
+
+    def test_has_fts_index_false_when_not_created(self, document_store):
+        """Test has_fts_index returns False when no FTS index exists."""
+        assert document_store.has_fts_index() is False
+
+    def test_has_fts_index_true_after_creation(self, document_store):
+        """Test has_fts_index returns True after creating FTS index."""
+        # Need to create some chunks first
+        document_store.bulk_store_all_chunks([(1, "test content", 0, 12)])
+        document_store.create_fts_index()
+
+        assert document_store.has_fts_index() is True
+
+    def test_has_fts_index_after_reopen(self, temp_db_path):
+        """Test has_fts_index works after reopening database."""
+        # Create and close
+        store = DocumentStore(temp_db_path, read_only=False)
+        store.bulk_store_all_chunks([(1, "test content", 0, 12)])
+        store.create_fts_index()
+        store.close()
+
+        # Reopen read-only
+        store = DocumentStore(temp_db_path, read_only=True)
+        assert store.has_fts_index() is True
+        store.close()
+
+    def test_create_fts_index_empty_chunks(self, document_store):
+        """Test creating FTS index with no chunks."""
+        document_store.create_fts_index()
+        assert document_store.has_fts_index() is True
+
+    def test_get_fts_candidates_no_index(self, document_store):
+        """Test get_fts_candidates returns empty list when no FTS index."""
+        document_store.bulk_store_all_chunks([(1, "test content about tools", 0, 24)])
+        # Don't create FTS index
+
+        candidates = document_store.get_fts_candidates("tools")
+
+        assert candidates == []
+
+    def test_get_fts_candidates_with_index(self, document_store):
+        """Test get_fts_candidates returns results with FTS index."""
+        document_store.bulk_store_all_chunks(
+            [
+                (1, "test content about tools", 0, 24),
+                (1, "another chunk about resources", 0, 29),
+            ]
+        )
+        document_store.create_fts_index()
+
+        candidates = document_store.get_fts_candidates("tools")
+
+        assert len(candidates) > 0
+        # Should return chunk IDs
+        assert all(isinstance(c, int) for c in candidates)
+
+    def test_get_fts_candidates_respects_limit(self, document_store):
+        """Test get_fts_candidates respects limit parameter."""
+        # Create many chunks
+        chunks = [(1, f"chunk {i} about testing", 0, 20) for i in range(50)]
+        document_store.bulk_store_all_chunks(chunks)
+        document_store.create_fts_index()
+
+        candidates = document_store.get_fts_candidates("testing", limit=5)
+
+        assert len(candidates) <= 5
+
+
+class TestBulkStoreChunks:
+    """Tests for bulk_store_all_chunks method."""
+
+    def test_bulk_store_all_chunks_empty(self, document_store):
+        """Test bulk storing empty list of chunks."""
+        document_store.bulk_store_all_chunks([])
+
+        chunks = document_store.get_all_chunks()
+        assert len(chunks) == 0
+
+    def test_bulk_store_all_chunks_single(self, document_store):
+        """Test bulk storing a single chunk."""
+        document_store.upsert_document(
+            source_name="test",
+            source_url="https://example.com/llms.txt",
+            doc_url="https://example.com/doc.md",
+            title="Test",
+            content="Test content",
+        )
+        document_store.bulk_store_all_chunks([(1, "test content", 0, 12)])
+
+        chunks = document_store.get_all_chunks()
+        assert len(chunks) == 1
+        assert chunks[0][0].content == "test content"
+        assert chunks[0][0].start_pos == 0
+        assert chunks[0][0].end_pos == 12
+
+    def test_bulk_store_all_chunks_multiple(self, document_store):
+        """Test bulk storing multiple chunks."""
+        document_store.upsert_document(
+            source_name="test",
+            source_url="https://example.com/llms.txt",
+            doc_url="https://example.com/doc.md",
+            title="Test",
+            content="Test content with multiple chunks",
+        )
+        chunks_data = [
+            (1, "first chunk", 0, 11),
+            (1, "second chunk", 12, 24),
+            (1, "third chunk", 25, 36),
+        ]
+        document_store.bulk_store_all_chunks(chunks_data)
+
+        chunks = document_store.get_all_chunks()
+        assert len(chunks) == 3
+
+    def test_bulk_store_all_chunks_replaces_existing(self, document_store):
+        """Test that bulk_store_all_chunks replaces existing chunks."""
+        document_store.upsert_document(
+            source_name="test",
+            source_url="https://example.com/llms.txt",
+            doc_url="https://example.com/doc.md",
+            title="Test",
+            content="Test content",
+        )
+
+        # Store initial chunks
+        document_store.bulk_store_all_chunks(
+            [
+                (1, "old chunk 1", 0, 11),
+                (1, "old chunk 2", 12, 23),
+            ]
+        )
+
+        # Store new chunks (should replace all)
+        document_store.bulk_store_all_chunks(
+            [
+                (1, "new chunk", 0, 9),
+            ]
+        )
+
+        chunks = document_store.get_all_chunks()
+        assert len(chunks) == 1
+        assert chunks[0][0].content == "new chunk"
+
+    def test_bulk_store_all_chunks_multiple_documents(self, populated_store):
+        """Test bulk storing chunks for multiple documents."""
+        chunks_data = [
+            (1, "chunk for doc 1", 0, 15),
+            (2, "chunk for doc 2", 0, 15),
+            (3, "chunk for doc 3", 0, 15),
+        ]
+        populated_store.bulk_store_all_chunks(chunks_data)
+
+        chunks = populated_store.get_all_chunks()
+        assert len(chunks) == 3
+        # Verify chunks are associated with different docs
+        doc_ids = {chunk[0].doc_id for chunk in chunks}
+        assert len(doc_ids) == 3

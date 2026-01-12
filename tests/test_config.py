@@ -64,6 +64,12 @@ class TestConfig:
         assert config.db_path.endswith(".llmdoc/index.db")
         assert config.refresh_interval_hours == 6
         assert config.max_concurrent_fetches == 5
+        assert config.enable_fts is True
+
+    def test_config_enable_fts_false(self):
+        """Test configuration with FTS disabled."""
+        config = Config(enable_fts=False)
+        assert config.enable_fts is False
 
     def test_config_with_sources(self, sample_sources):
         """Test configuration with sources."""
@@ -199,3 +205,69 @@ class TestLoadConfig:
         config = load_config()
 
         assert config.sources == []
+
+    def test_load_enable_fts_from_env_true(self, monkeypatch):
+        """Test loading enable_fts=true from environment."""
+        monkeypatch.setenv("LLMDOC_ENABLE_FTS", "true")
+
+        config = load_config()
+
+        assert config.enable_fts is True
+
+    def test_load_enable_fts_from_env_false(self, monkeypatch):
+        """Test loading enable_fts=false from environment."""
+        monkeypatch.setenv("LLMDOC_ENABLE_FTS", "false")
+
+        config = load_config()
+
+        assert config.enable_fts is False
+
+    def test_load_enable_fts_from_env_numeric(self, monkeypatch):
+        """Test loading enable_fts with numeric values from environment."""
+        monkeypatch.setenv("LLMDOC_ENABLE_FTS", "1")
+        config = load_config()
+        assert config.enable_fts is True
+
+        monkeypatch.setenv("LLMDOC_ENABLE_FTS", "0")
+        config = load_config()
+        assert config.enable_fts is False
+
+    def test_load_enable_fts_from_json(self, monkeypatch, tmp_path):
+        """Test loading enable_fts from JSON config file."""
+        monkeypatch.delenv("LLMDOC_SOURCES", raising=False)
+        monkeypatch.delenv("LLMDOC_ENABLE_FTS", raising=False)
+
+        config_data = {
+            "sources": [{"name": "test", "url": "https://example.com/llms.txt"}],
+            "enable_fts": False,
+        }
+        config_file = tmp_path / "llmdoc.json"
+        config_file.write_text(json.dumps(config_data))
+
+        original_cwd = os.getcwd()
+        os.chdir(tmp_path)
+        try:
+            config = load_config()
+        finally:
+            os.chdir(original_cwd)
+
+        assert config.enable_fts is False
+
+    def test_load_enable_fts_env_takes_precedence(self, monkeypatch, tmp_path):
+        """Test that env var takes precedence over JSON for enable_fts."""
+        monkeypatch.setenv("LLMDOC_SOURCES", "test:https://example.com/llms.txt")
+        monkeypatch.setenv("LLMDOC_ENABLE_FTS", "false")
+
+        config_data = {"enable_fts": True}
+        config_file = tmp_path / "llmdoc.json"
+        config_file.write_text(json.dumps(config_data))
+
+        original_cwd = os.getcwd()
+        os.chdir(tmp_path)
+        try:
+            config = load_config()
+        finally:
+            os.chdir(original_cwd)
+
+        # Env should win
+        assert config.enable_fts is False

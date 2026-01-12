@@ -373,6 +373,22 @@ class DocumentStore:
         )
         conn.commit()
 
+    def bulk_store_all_chunks(self, chunks: list[tuple[int, str, int, int]]) -> None:
+        """Bulk store all chunks, replacing existing data.
+
+        Args:
+            chunks: List of (doc_id, content, start_pos, end_pos) tuples.
+        """
+        conn = self._ensure_connected()
+        conn.execute("DELETE FROM chunks")
+
+        if chunks:
+            conn.executemany(
+                "INSERT INTO chunks (doc_id, content, start_pos, end_pos) VALUES (?, ?, ?, ?)",
+                chunks,
+            )
+        conn.commit()
+
     def clear_all_chunks(self) -> None:
         """Remove all chunks from the store."""
         conn = self._ensure_connected()
@@ -407,6 +423,21 @@ class DocumentStore:
             )
             for row in rows
         ]
+
+    def has_fts_index(self) -> bool:
+        """Check if FTS index exists on chunks table.
+
+        Returns:
+            True if FTS index exists, False otherwise.
+        """
+        conn = self._ensure_connected()
+        try:
+            conn.execute("LOAD fts")
+            # Try to query the FTS index - if it doesn't exist, this will fail
+            conn.execute("SELECT * FROM fts_main_chunks.docs LIMIT 0")
+            return True
+        except duckdb.CatalogException:
+            return False
 
     def create_fts_index(self) -> None:
         """Create FTS index on chunks table with Porter stemming."""

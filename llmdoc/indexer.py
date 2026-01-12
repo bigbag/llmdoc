@@ -255,10 +255,12 @@ class BM25Index:
         chunk_size: int = 500,
         chunk_overlap: int = 100,
         store: DocumentStore | None = None,
+        enable_fts: bool = True,
     ) -> None:
         self.chunk_size = chunk_size
         self.chunk_overlap = chunk_overlap
         self._store = store
+        self._enable_fts = enable_fts
         self._index: BM25Okapi | None = None
         self._chunks: list[DocumentChunk] = []
         self._chunk_id_map: dict[int, int] = {}
@@ -457,7 +459,7 @@ class BM25Index:
                 return []
 
             candidate_indices: set[int] | None = None
-            if self._store and self._chunk_id_map:
+            if self._enable_fts and self._store and self._chunk_id_map:
                 fts_ids = self._store.get_fts_candidates(query, limit=100)
                 if fts_ids:
                     candidate_indices = {self._chunk_id_map[cid] for cid in fts_ids if cid in self._chunk_id_map}

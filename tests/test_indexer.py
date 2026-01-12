@@ -21,6 +21,21 @@ class TestBM25Index:
         assert index.chunk_size == 1000
         assert index.chunk_overlap == 200
 
+    def test_create_index_enable_fts_default(self):
+        """Test that FTS is enabled by default."""
+        index = BM25Index()
+        assert index._enable_fts is True
+
+    def test_create_index_enable_fts_false(self):
+        """Test creating index with FTS disabled."""
+        index = BM25Index(enable_fts=False)
+        assert index._enable_fts is False
+
+    def test_create_index_enable_fts_true(self):
+        """Test creating index with FTS explicitly enabled."""
+        index = BM25Index(enable_fts=True)
+        assert index._enable_fts is True
+
     def test_build_index(self, bm25_index, sample_documents):
         """Test building index from documents."""
         bm25_index.build_index(sample_documents)
@@ -402,6 +417,52 @@ class TestSentenceBoundaryChunking:
         # Should complete without hanging
         chunks = index._chunk_document(doc)
         assert len(chunks) >= 1
+
+
+class TestSearchWithFTS:
+    """Tests for search behavior with FTS enabled/disabled."""
+
+    def test_search_with_fts_disabled_returns_results(self, sample_documents):
+        """Test that search works with FTS disabled (pure BM25)."""
+        index = BM25Index(enable_fts=False)
+        index.build_index(sample_documents)
+
+        results = index.search("tools functions")
+
+        assert len(results) > 0
+        assert results[0].title == "Tools Documentation"
+
+    def test_search_with_fts_disabled_no_store(self, sample_documents):
+        """Test search with FTS disabled and no store (pure BM25)."""
+        index = BM25Index(enable_fts=False, store=None)
+        index.build_index(sample_documents)
+
+        results = index.search("agents interface")
+
+        assert len(results) > 0
+        # Should find the agents doc
+        assert any("Agents" in r.title for r in results)
+
+    def test_search_with_fts_enabled_no_store_falls_back(self, sample_documents):
+        """Test that search with FTS enabled but no store falls back to BM25."""
+        index = BM25Index(enable_fts=True, store=None)
+        index.build_index(sample_documents)
+
+        # Should still work - falls back to scanning all chunks
+        results = index.search("tools")
+
+        assert len(results) > 0
+
+    def test_search_with_fts_enabled_empty_chunk_id_map(self, sample_documents):
+        """Test search with FTS enabled but empty chunk_id_map."""
+        index = BM25Index(enable_fts=True, store=None)
+        index.build_index(sample_documents)
+        index._chunk_id_map = {}  # Empty map
+
+        # Should still work - falls back to scanning all chunks
+        results = index.search("resources data")
+
+        assert len(results) > 0
 
 
 class TestSearchWithinDocument:

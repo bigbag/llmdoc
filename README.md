@@ -93,6 +93,9 @@ export LLMDOC_MAX_CONCURRENT="5"
 
 # Optional: Skip refresh on startup (default: false)
 export LLMDOC_SKIP_STARTUP_REFRESH="true"
+
+# Optional: Disable FTS indexing and use pure BM25 (default: true)
+export LLMDOC_ENABLE_FTS="false"
 ```
 
 ### Config File
@@ -108,7 +111,8 @@ Create `llmdoc.json` in the working directory:
   "db_path": "~/.llmdoc/index.db",
   "refresh_interval_hours": 6,
   "max_concurrent_fetches": 5,
-  "skip_startup_refresh": false
+  "skip_startup_refresh": false,
+  "enable_fts": true
 }
 ```
 

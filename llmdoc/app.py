@@ -38,7 +38,15 @@ class LLMDocApp:
 
         store = DocumentStore(config.db_path, read_only=True)
 
-        index = BM25Index(store=store)
+        # Create FTS index if enabled but missing (e.g., DB created with FTS disabled)
+        if config.enable_fts and not store.has_fts_index():
+            store.close()
+            write_store = DocumentStore(config.db_path, read_only=False)
+            write_store.create_fts_index()
+            write_store.close()
+            store = DocumentStore(config.db_path, read_only=True)
+
+        index = BM25Index(store=store, enable_fts=config.enable_fts)
         existing_docs = store.get_all_documents()
         if existing_docs:
             index.build_index(existing_docs)

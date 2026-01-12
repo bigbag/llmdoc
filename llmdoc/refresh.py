@@ -87,7 +87,7 @@ def _write_source_to_store(
     documents: list,
     source_errors: list[str],
     index: Any,
-) -> tuple[int, SourceRefreshStats, list[str]]:
+) -> tuple[int, SourceRefreshStats, list[str], list[tuple[int, str, int, int]]]:
     """Write documents for a single source to the store.
 
     Args:
@@ -98,11 +98,12 @@ def _write_source_to_store(
         index: The BM25Index for generating chunks.
 
     Returns:
-        Tuple of (doc_count, stats, errors).
+        Tuple of (doc_count, stats, errors, chunks).
     """
     errors: list[str] = []
     doc_count = 0
     valid_urls: set[str] = set()
+    all_chunks: list[tuple[int, str, int, int]] = []
 
     try:
         for doc in documents:
@@ -130,7 +131,9 @@ def _write_source_to_store(
                     updated_at=stored_doc.updated_at,
                 )
                 chunk_data = index.generate_chunks_for_document(store_doc)
-                write_store.store_chunks(stored_doc.id, chunk_data)
+                all_chunks.extend(
+                    (stored_doc.id, content, start_pos, end_pos) for content, start_pos, end_pos in chunk_data
+                )
 
         deleted = write_store.delete_stale_documents(source.name, valid_urls)
         if deleted:
@@ -148,7 +151,7 @@ def _write_source_to_store(
         errors=len(source_errors),
     )
 
-    return doc_count, stats, errors
+    return doc_count, stats, errors, all_chunks
 
 
 def _rebuild_index(app: LLMDocApp) -> None:
@@ -190,6 +193,7 @@ async def do_refresh(app: LLMDocApp) -> RefreshResult:
     # Phase 2-3: Write to temp DB + atomic swap (with file lock)
     source_stats: list[SourceRefreshStats] = []
     total_docs = 0
+    all_chunks: list[tuple[int, str, int, int]] = []
 
     with file_lock(lock_path) as acquired:
         if not acquired:
@@ -211,14 +215,17 @@ async def do_refresh(app: LLMDocApp) -> RefreshResult:
             write_store = DocumentStore(temp_db_path, read_only=False)
 
             for source, documents, source_errors in fetched_data:
-                doc_count, stats, errors = _write_source_to_store(
+                doc_count, stats, errors, chunks = _write_source_to_store(
                     write_store, source, documents, source_errors, app.index
                 )
                 total_docs += doc_count
                 source_stats.append(stats)
                 all_errors.extend(errors)
+                all_chunks.extend(chunks)
 
-            write_store.create_fts_index()
+            write_store.bulk_store_all_chunks(all_chunks)
+            if app.config.enable_fts:
+                write_store.create_fts_index()
 
         except Exception:
             if os.path.exists(temp_db_path):

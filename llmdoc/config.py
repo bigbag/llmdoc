@@ -64,6 +64,7 @@ class Config:
     refresh_interval_hours: int = 6
     max_concurrent_fetches: int = 5
     skip_startup_refresh: bool = False
+    enable_fts: bool = True
 
     def __post_init__(self) -> None:
         """Expand paths and validate values after initialization."""
@@ -99,6 +100,7 @@ def load_config() -> Config:
     refresh_interval_hours: int | None = None
     max_concurrent_fetches: int | None = None
     skip_startup_refresh: bool | None = None
+    enable_fts: bool | None = None
 
     # Try environment variables first
     env_sources = os.environ.get("LLMDOC_SOURCES")
@@ -126,6 +128,10 @@ def load_config() -> Config:
     if env_skip_startup:
         skip_startup_refresh = env_skip_startup.lower() in ("true", "1", "yes")
 
+    env_enable_fts = os.environ.get("LLMDOC_ENABLE_FTS")
+    if env_enable_fts:
+        enable_fts = env_enable_fts.lower() in ("true", "1", "yes")
+
     # Try config file if no sources from env
     if not sources:
         config_file = Path("llmdoc.json")
@@ -147,6 +153,8 @@ def load_config() -> Config:
                         max_concurrent_fetches = data["max_concurrent_fetches"]
                     if "skip_startup_refresh" in data and skip_startup_refresh is None:
                         skip_startup_refresh = data["skip_startup_refresh"]
+                    if "enable_fts" in data and enable_fts is None:
+                        enable_fts = data["enable_fts"]
             except (json.JSONDecodeError, OSError):
                 pass
 
@@ -160,5 +168,7 @@ def load_config() -> Config:
         config_kwargs["max_concurrent_fetches"] = max_concurrent_fetches
     if skip_startup_refresh is not None:
         config_kwargs["skip_startup_refresh"] = skip_startup_refresh
+    if enable_fts is not None:
+        config_kwargs["enable_fts"] = enable_fts
 
     return Config(**config_kwargs)
