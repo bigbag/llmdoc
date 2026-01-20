@@ -416,16 +416,16 @@ class BM25Index:
             stored = self._store.get_all_chunks()
             self._chunk_id_map = {}
 
+            chunk_lookup: dict[tuple[str, int, int], int] = {
+                (chunk.doc_url, chunk.start_pos, chunk.end_pos): i for i, chunk in enumerate(self._chunks)
+            }
+
             for db_chunk, doc in stored:
-                for i, chunk in enumerate(self._chunks):
-                    if (
-                        chunk.doc_url == doc.doc_url
-                        and chunk.start_pos == db_chunk.start_pos
-                        and chunk.end_pos == db_chunk.end_pos
-                    ):
-                        chunk.id = db_chunk.id
-                        self._chunk_id_map[db_chunk.id] = i
-                        break
+                key = (doc.doc_url, db_chunk.start_pos, db_chunk.end_pos)
+                if key in chunk_lookup:
+                    idx = chunk_lookup[key]
+                    self._chunks[idx].id = db_chunk.id
+                    self._chunk_id_map[db_chunk.id] = idx
 
     def generate_chunks_for_document(self, doc: Document) -> list[tuple[str, int, int]]:
         """Generate chunk data for a document (for storage during refresh).

@@ -12,6 +12,8 @@ from duckdb import DuckDBPyConnection
 
 logger = logging.getLogger(__name__)
 
+BULK_INSERT_BATCH_SIZE = 500
+
 
 @dataclass
 class Chunk:
@@ -382,11 +384,15 @@ class DocumentStore:
         conn = self._ensure_connected()
         conn.execute("DELETE FROM chunks")
 
-        if chunks:
-            conn.executemany(
-                "INSERT INTO chunks (doc_id, content, start_pos, end_pos) VALUES (?, ?, ?, ?)",
-                chunks,
-            )
+        if not chunks:
+            conn.commit()
+            return
+
+        for i in range(0, len(chunks), BULK_INSERT_BATCH_SIZE):
+            batch = chunks[i : i + BULK_INSERT_BATCH_SIZE]
+            placeholders = ",".join(["(?, ?, ?, ?)"] * len(batch))
+            params = [item for row in batch for item in row]
+            conn.execute(f"INSERT INTO chunks (doc_id, content, start_pos, end_pos) VALUES {placeholders}", params)
         conn.commit()
 
     def clear_all_chunks(self) -> None:
