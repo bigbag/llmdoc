@@ -4,7 +4,7 @@ build-backend = "uv_build"
 
 [project]
 name = "llmdoc"
-version = "0.3.0"
+version = "0.3.1"
 description = "MCP server with RAG for llms.txt documentation"
 readme = "README.md"
 license = "MIT"
@@ -26,6 +26,7 @@ classifiers = [
 dependencies = [
     "duckdb>=1.4.3",
     "httpx>=0.28.1",
+    "pyarrow>=15.0.0",
     "rank-bm25>=0.2.2",
     "fastmcp>=2.0.0",
     "markdownify>=0.14.1",

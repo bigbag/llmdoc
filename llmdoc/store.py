@@ -8,11 +8,10 @@ from datetime import datetime
 from pathlib import Path
 
 import duckdb
+import pyarrow as pa
 from duckdb import DuckDBPyConnection
 
 logger = logging.getLogger(__name__)
-
-BULK_INSERT_BATCH_SIZE = 500
 
 
 @dataclass
@@ -388,11 +387,15 @@ class DocumentStore:
             conn.commit()
             return
 
-        for i in range(0, len(chunks), BULK_INSERT_BATCH_SIZE):
-            batch = chunks[i : i + BULK_INSERT_BATCH_SIZE]
-            placeholders = ",".join(["(?, ?, ?, ?)"] * len(batch))
-            params = [item for row in batch for item in row]
-            conn.execute(f"INSERT INTO chunks (doc_id, content, start_pos, end_pos) VALUES {placeholders}", params)
+        arrow_table = pa.table(  # noqa: F841
+            {
+                "doc_id": pa.array([c[0] for c in chunks], type=pa.int32()),
+                "content": pa.array([c[1] for c in chunks], type=pa.string()),
+                "start_pos": pa.array([c[2] for c in chunks], type=pa.int32()),
+                "end_pos": pa.array([c[3] for c in chunks], type=pa.int32()),
+            }
+        )
+        conn.execute("INSERT INTO chunks (doc_id, content, start_pos, end_pos) SELECT * FROM arrow_table")
         conn.commit()
 
     def clear_all_chunks(self) -> None:
